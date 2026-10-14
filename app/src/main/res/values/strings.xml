@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RideVault</string>
+    <string name="extension_name">RideVault</string>
+
+    <!-- Strava -->
+    <string name="strava_connect">Connect to Strava</string>
+    <string name="strava_connected">Connected to Strava</string>
+    <string name="strava_disconnect">Disconnect</string>
+
+    <!-- Bike Mapping -->
+    <string name="mapping_title">Sensor → Bike Mapping</string>
+    <string name="mapping_assign">Assign to bike</string>
+    <string name="mapping_unknown_sensor">Unknown sensor detected</string>
+    <string name="mapping_no_bikes">No bikes found in Strava</string>
+
+    <!-- Upload -->
+    <string name="upload_title">Recent Rides</string>
+    <string name="upload_pending">Ready to upload</string>
+    <string name="upload_uploading">Uploading…</string>
+    <string name="upload_success">Uploaded to Strava</string>
+    <string name="upload_failed">Upload failed</string>
+    <string name="upload_no_rides">No unuploaded rides</string>
+
+    <!-- Notifications -->
+    <string name="notification_ride_complete">Ride complete — %1$s detected</string>
+    <string name="notification_upload_success">%1$s uploaded to Strava with %2$s</string>
+    <string name="notification_unknown_sensor">New sensor detected — tap to assign a bike</string>
+</resources>

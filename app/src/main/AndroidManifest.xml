@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:name=".RideVaultApp"
+        android:icon="@drawable/ic_ridevault"
+        android:label="@string/app_name"
+        android:theme="@style/AppTheme">
+
+        <!-- Main activity for setup/config UI -->
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="com.ridevault.karoo.MAIN" />
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Strava OAuth callback -->
+        <activity
+            android:name=".strava.StravaAuthActivity"
+            android:exported="true"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="karooridevault"
+                    android:host="strava-auth" />
+            </intent-filter>
+        </activity>
+
+        <!-- Karoo Extension Service -->
+        <service
+            android:name=".extension.RideVaultExtension"
+            android:exported="true"
+            tools:ignore="ExportedService">
+            <intent-filter>
+                <action android:name="io.hammerhead.karooext.KAROO_EXTENSION" />
+            </intent-filter>
+            <meta-data
+                android:name="io.hammerhead.karooext.EXTENSION_INFO"
+                android:resource="@xml/extension_info" />
+        </service>
+
+        <!-- GitHub Releases manifest for auto-update via Karoo Extension Library -->
+        <meta-data
+            android:name="io.hammerhead.karooext.MANIFEST_URL"
+            android:value="https://github.com/JohnJ80/KarooRideVault/releases/latest/download/manifest.json" />
+
+    </application>
+
+</manifest>
