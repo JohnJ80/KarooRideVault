@@ -10,10 +10,13 @@ import io.hammerhead.karooext.models.SystemNotification
 import com.ridevault.karoo.R
 import com.ridevault.karoo.mapping.SensorBikeMapper
 import com.ridevault.karoo.strava.StravaTokenStore
+import com.ridevault.karoo.strava.StravaUploader
+import com.ridevault.karoo.upload.FitFileFinder
 import com.ridevault.karoo.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -33,6 +36,8 @@ class RideVaultExtension : KarooExtension("ridevault", "0.1.0") {
     private lateinit var karooSystem: KarooSystemService
     private lateinit var mapper: SensorBikeMapper
     private lateinit var tokenStore: StravaTokenStore
+    private lateinit var uploader: StravaUploader
+    private lateinit var fitFinder: FitFileFinder
 
     private var serviceJob: Job? = null
     private var detectedBikeName: String? = null
@@ -43,6 +48,8 @@ class RideVaultExtension : KarooExtension("ridevault", "0.1.0") {
         karooSystem = KarooSystemService(this)
         mapper = SensorBikeMapper(this)
         tokenStore = StravaTokenStore(this)
+        uploader = StravaUploader(this)
+        fitFinder = FitFileFinder(this)
 
         serviceJob = CoroutineScope(Dispatchers.IO).launch {
             karooSystem.connect { connected ->
@@ -139,7 +146,7 @@ class RideVaultExtension : KarooExtension("ridevault", "0.1.0") {
 
     /**
      * Called when a ride transitions to Idle after recording.
-     * Finds the most recent .FIT file and queues it for Strava upload.
+     * Finds the most recent .FIT file and uploads to Strava with gear_id.
      */
     private fun onRideEnded() {
         Timber.i("Ride ended — bike: $detectedBikeName, gear_id: $detectedGearId")
@@ -159,17 +166,79 @@ class RideVaultExtension : KarooExtension("ridevault", "0.1.0") {
         }
 
         val bikeName = detectedBikeName ?: "Unknown bike"
-        karooSystem.dispatch(
-            SystemNotification(
-                "rv-ride-complete",
-                getString(R.string.notification_ride_complete, bikeName),
-                action = "Upload",
-                actionIntent = "com.ridevault.karoo.MAIN",
-            ),
-        )
+        val gearId = detectedGearId
 
-        // TODO: Find latest .FIT file and queue for upload
-        // The actual upload will be triggered from the UI or auto-upload setting
+        // Launch upload on IO dispatcher
+        CoroutineScope(Dispatchers.IO).launch {
+            // Wait for the Karoo to finish writing the FIT file
+            delay(FitFileFinder.SETTLE_DELAY_MS)
+
+            val fitFile = fitFinder.findLatestFitFile()
+            if (fitFile == null) {
+                Timber.w("No FIT file found after ride")
+                karooSystem.dispatch(
+                    SystemNotification(
+                        "rv-no-fit",
+                        "Ride ended but no FIT file found",
+                        subText = "Check that rides are being saved",
+                    ),
+                )
+                return@launch
+            }
+
+            if (fitFinder.isAlreadyUploaded(fitFile)) {
+                Timber.i("FIT file ${fitFile.name} already uploaded — skipping")
+                return@launch
+            }
+
+            Timber.i("Uploading ${fitFile.name} as $bikeName (gear_id=$gearId)")
+            karooSystem.dispatch(
+                SystemNotification(
+                    "rv-uploading",
+                    "Uploading to Strava…",
+                    subText = "$bikeName — ${fitFile.name}",
+                ),
+            )
+
+            when (val result = uploader.upload(fitFile, gearId, bikeName)) {
+                is StravaUploader.UploadResult.Success -> {
+                    fitFinder.markUploaded(fitFile)
+                    Timber.i("Upload complete — activity ${result.activityId}")
+                    karooSystem.dispatch(
+                        SystemNotification(
+                            "rv-upload-ok",
+                            "Ride uploaded to Strava ✓",
+                            subText = "${result.bikeName} — activity ${result.activityId}",
+                        ),
+                    )
+                }
+                is StravaUploader.UploadResult.Processing -> {
+                    // Strava is still processing — mark uploaded to avoid retries,
+                    // it will appear on Strava shortly
+                    fitFinder.markUploaded(fitFile)
+                    Timber.i("Upload submitted, Strava still processing (id=${result.uploadId})")
+                    karooSystem.dispatch(
+                        SystemNotification(
+                            "rv-upload-ok",
+                            "Ride sent to Strava",
+                            subText = "$bikeName — processing on Strava",
+                        ),
+                    )
+                }
+                is StravaUploader.UploadResult.Error -> {
+                    Timber.e("Upload failed: ${result.message}")
+                    karooSystem.dispatch(
+                        SystemNotification(
+                            "rv-upload-fail",
+                            "Strava upload failed",
+                            subText = result.message,
+                            action = "Retry",
+                            actionIntent = "com.ridevault.karoo.MAIN",
+                        ),
+                    )
+                }
+            }
+        }
     }
 
     override fun onDestroy() {
