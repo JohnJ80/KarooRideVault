@@ -35,8 +35,9 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data
-                    android:scheme="ridevault"
-                    android:host="karoo-auth" />
+                    android:scheme="http"
+                    android:host="localhost"
+                    android:path="/ridevault-karoo" />
             </intent-filter>
         </activity>
 
