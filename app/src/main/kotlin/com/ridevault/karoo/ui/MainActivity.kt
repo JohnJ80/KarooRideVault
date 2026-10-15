@@ -9,7 +9,6 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -24,8 +23,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -58,6 +55,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
 /**
  * Main UI for RideVault on Karoo.
@@ -166,6 +164,12 @@ fun UploadConfirmationScreen(
     onDone: () -> Unit,
     onNeedsAuth: () -> Unit,
 ) {
+    val fitFile = remember { File(fitFilePath) }
+    val dateFormat = remember { SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()) }
+    val rideTime = remember {
+        if (fitFile.exists()) dateFormat.format(Date(fitFile.lastModified())) else fitFileName
+    }
+
     var selectedGearId by remember { mutableStateOf(initialGearId) }
     var selectedBikeName by remember { mutableStateOf(initialBikeName) }
     var bikes by remember { mutableStateOf<List<StravaApi.Bike>>(emptyList()) }
@@ -174,7 +178,6 @@ fun UploadConfirmationScreen(
     var uploadDone by remember { mutableStateOf(false) }
     var uploadError by remember { mutableStateOf<String?>(null) }
     var showAuthScreen by remember { mutableStateOf(false) }
-    var bikeMenuExpanded by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     // Fetch the user's Strava bikes on first load
@@ -186,9 +189,14 @@ fun UploadConfirmationScreen(
                 result.onSuccess { athlete ->
                     bikes = athlete.bikes
                     Timber.i("Loaded ${athlete.bikes.size} bikes from Strava")
+                    // If no bike was pre-selected but bikes are available, default to first
+                    if (selectedGearId == null && athlete.bikes.isNotEmpty()) {
+                        selectedGearId = athlete.bikes.first().id
+                        selectedBikeName = athlete.bikes.first().name
+                    }
                 }
                 result.onFailure { e ->
-                    Timber.w(e, "Failed to load bikes — using detected bike only")
+                    Timber.w(e, "Failed to load bikes")
                 }
             }
             loadingBikes = false
@@ -204,7 +212,6 @@ fun UploadConfirmationScreen(
             onConnected = {
                 showAuthScreen = false
                 uploadError = null
-                // Reload bikes after re-auth
                 scope.launch {
                     withContext(Dispatchers.IO) {
                         val token = tokenStore.getToken()
@@ -216,9 +223,7 @@ fun UploadConfirmationScreen(
                     }
                 }
             },
-            onCancel = {
-                showAuthScreen = false
-            },
+            onCancel = { showAuthScreen = false },
         )
         return
     }
@@ -238,22 +243,16 @@ fun UploadConfirmationScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // FIT file info
+        // Ride info card — date/time instead of cryptic UUID filename
         Card(
             modifier = Modifier.fillMaxWidth(),
             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
                 Text(
-                    text = "Ride file",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = fitFileName,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = rideTime,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
                 )
             }
         }
@@ -271,7 +270,7 @@ fun UploadConfirmationScreen(
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                 )
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
                 if (loadingBikes) {
                     Row(
@@ -287,91 +286,105 @@ fun UploadConfirmationScreen(
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
+                } else if (bikes.isEmpty()) {
+                    Text(
+                        text = "No bikes found on Strava",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 } else {
-                    // Current selection — tap to change
-                    Box {
+                    // Bike list — tap to select
+                    bikes.forEach { bike ->
+                        val isSelected = bike.id == selectedGearId
+                        val distanceKm = (bike.distance / 1000).roundToInt()
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable(enabled = bikes.isNotEmpty()) {
-                                    bikeMenuExpanded = true
+                                .padding(vertical = 3.dp)
+                                .clickable {
+                                    selectedGearId = bike.id
+                                    selectedBikeName = bike.name
+                                    Timber.i("User selected bike: ${bike.name} (${bike.id})")
                                 },
                             colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                containerColor = if (isSelected) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant
+                                },
                             ),
                         ) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(12.dp),
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Text(
-                                    text = selectedBikeName,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.Medium,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                )
-                                if (bikes.size > 1) {
+                                Column {
                                     Text(
-                                        text = "Change ▾",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                                        text = bike.name,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    )
+                                    if (distanceKm > 0) {
+                                        Text(
+                                            text = "%,d km".format(distanceKm),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                                if (isSelected) {
+                                    Text(
+                                        text = "✓",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary,
                                     )
                                 }
                             }
                         }
-
-                        // Dropdown menu for bike selection
-                        DropdownMenu(
-                            expanded = bikeMenuExpanded,
-                            onDismissRequest = { bikeMenuExpanded = false },
-                        ) {
-                            bikes.forEach { bike ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            text = bike.name,
-                                            fontWeight = if (bike.id == selectedGearId) {
-                                                FontWeight.Bold
-                                            } else {
-                                                FontWeight.Normal
-                                            },
-                                        )
-                                    },
-                                    onClick = {
-                                        selectedGearId = bike.id
-                                        selectedBikeName = bike.name
-                                        bikeMenuExpanded = false
-                                        Timber.i("User selected bike: ${bike.name} (${bike.id})")
-                                    },
-                                )
-                            }
-                            // Option to upload with no bike
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        text = "No bike",
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                },
-                                onClick = {
-                                    selectedGearId = null
-                                    selectedBikeName = "No bike"
-                                    bikeMenuExpanded = false
-                                },
-                            )
-                        }
                     }
 
-                    if (bikes.isEmpty() && selectedGearId == null) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "No bikes found on Strava. Upload will proceed without a bike tag.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    // "No bike" option
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 3.dp)
+                            .clickable {
+                                selectedGearId = null
+                                selectedBikeName = "No bike"
+                            },
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (selectedGearId == null) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant
+                            },
+                        ),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "No bike",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            if (selectedGearId == null) {
+                                Text(
+                                    text = "✓",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -420,15 +433,17 @@ fun UploadConfirmationScreen(
                 ) {
                     Text(
                         text = "✓ Uploaded to Strava",
-                        style = MaterialTheme.typography.titleSmall,
+                        style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
-                    Text(
-                        text = selectedBikeName,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
+                    if (selectedBikeName != "No bike") {
+                        Text(
+                            text = selectedBikeName,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                    }
                 }
             }
             Spacer(modifier = Modifier.height(16.dp))
@@ -439,13 +454,12 @@ fun UploadConfirmationScreen(
                 Text("Done")
             }
         } else {
-            // Action buttons
+            // Upload button
             Button(
                 onClick = {
                     uploading = true
                     uploadError = null
                     scope.launch {
-                        val fitFile = File(fitFilePath)
                         if (!fitFile.exists()) {
                             uploadError = "FIT file not found"
                             uploading = false
@@ -463,7 +477,6 @@ fun UploadConfirmationScreen(
                                 Timber.i("Upload success — activity ${result.activityId}")
                             }
                             is StravaUploader.UploadResult.Processing -> {
-                                // Still processing but accepted — treat as success
                                 fitFinder.markUploaded(fitFile)
                                 uploadDone = true
                                 Timber.i("Upload accepted — processing (id ${result.uploadId})")
@@ -471,7 +484,6 @@ fun UploadConfirmationScreen(
                             is StravaUploader.UploadResult.Error -> {
                                 if (result.isAuthFailure) {
                                     uploadError = "Strava auth expired — please reconnect"
-                                    // Queue for retry too
                                     pendingStore.addPending(
                                         fitFile = fitFile,
                                         gearId = selectedGearId,
@@ -528,8 +540,6 @@ fun UploadConfirmationScreen(
 
             OutlinedButton(
                 onClick = {
-                    // Save as pending so user can retry later from dashboard
-                    val fitFile = File(fitFilePath)
                     if (fitFile.exists() && !uploadDone) {
                         pendingStore.addPending(
                             fitFile = fitFile,
