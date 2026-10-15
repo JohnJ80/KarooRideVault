@@ -34,6 +34,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.ridevault.karoo.BuildConfig
 import com.ridevault.karoo.mapping.SensorBikeMapper
 import com.ridevault.karoo.strava.StravaAuthActivity
 import com.ridevault.karoo.strava.StravaTokenStore
@@ -99,11 +100,22 @@ fun RideVaultMainScreen(
         ) {
             // Header
             item {
-                Text(
-                    text = "RideVault",
-                    style = MaterialTheme.typography.headlineLarge,
-                    fontWeight = FontWeight.Bold,
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    Text(
+                        text = "RideVault",
+                        style = MaterialTheme.typography.headlineLarge,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        text = "v${BuildConfig.VERSION_NAME}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Text(
                     text = "Automated Strava gear tagging for Karoo",
                     style = MaterialTheme.typography.bodyMedium,
