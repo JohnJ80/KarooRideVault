@@ -47,9 +47,10 @@ fun StravaWebViewAuth(
                 }
 
                 // Enable cookies for Strava login session
+                val webView = this
                 CookieManager.getInstance().apply {
                     setAcceptCookie(true)
-                    setAcceptThirdPartyCookies(this@apply, true)
+                    setAcceptThirdPartyCookies(webView, true)
                 }
 
                 webViewClient = object : WebViewClient() {
