@@ -82,7 +82,7 @@ class StravaAuthActivity : ComponentActivity() {
     }
 
     companion object {
-        private const val STRAVA_AUTH_URL = "https://www.strava.com/oauth/mobile/authorize"
+        private const val STRAVA_AUTH_URL = "https://www.strava.com/oauth/authorize"
         private const val REDIRECT_URI = "http://localhost/ridevault-karoo"
         private const val SCOPE = "read,activity:write,activity:read_all"
 
