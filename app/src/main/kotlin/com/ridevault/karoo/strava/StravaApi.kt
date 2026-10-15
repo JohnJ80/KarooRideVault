@@ -166,6 +166,7 @@ class StravaApi(private val tokenStore: StravaTokenStore) {
             .build()
 
         return executeRequest(request) { responseBody ->
+            Timber.d("GET /athlete response: $responseBody")
             json.decodeFromString<Athlete>(responseBody)
         }
     }
