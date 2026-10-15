@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,7 +20,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -45,12 +45,9 @@ import kotlinx.coroutines.withContext
 /**
  * Main configuration UI for RideVault on Karoo.
  *
- * Strava auth uses a manual code-entry flow since the Karoo
- * doesn't have the Strava app and its browser is limited:
- * 1. User opens the auth URL on their phone
- * 2. Authorizes with Strava
- * 3. Copies the code from the redirect URL
- * 4. Enters it here on the Karoo
+ * Strava auth uses an in-app WebView that handles login
+ * and automatically intercepts the OAuth redirect to capture
+ * the authorization code — no phone or manual typing needed.
  */
 class MainActivity : ComponentActivity() {
 
@@ -90,13 +87,73 @@ fun RideVaultMainScreen(
     val mapping = mapper.loadMapping()
 
     // Auth flow state
-    var showAuthFlow by remember { mutableStateOf(false) }
-    var authCode by remember { mutableStateOf("") }
-    var authError by remember { mutableStateOf<String?>(null) }
+    var showWebView by remember { mutableStateOf(false) }
+    var authStatus by remember { mutableStateOf<String?>(null) }
     var isExchanging by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     val authUrl = StravaAuthActivity.buildAuthUrl().toString()
+
+    // Full-screen WebView for Strava login
+    if (showWebView && !isExchanging) {
+        StravaWebViewAuth(
+            authUrl = authUrl,
+            onCodeReceived = { code ->
+                showWebView = false
+                isExchanging = true
+                authStatus = "Connecting to Strava…"
+                scope.launch {
+                    val result = withContext(Dispatchers.IO) {
+                        api.exchangeToken(
+                            clientId = BuildConfig.STRAVA_CLIENT_ID,
+                            clientSecret = BuildConfig.STRAVA_CLIENT_SECRET,
+                            code = code,
+                        )
+                    }
+                    result.onSuccess { tokenResponse ->
+                        tokenStore.saveToken(
+                            StravaTokenStore.TokenData(
+                                accessToken = tokenResponse.accessToken,
+                                refreshToken = tokenResponse.refreshToken,
+                                expiresAt = tokenResponse.expiresAt,
+                                athleteId = tokenResponse.athlete?.id ?: 0,
+                                athleteFirstName = tokenResponse.athlete?.firstName ?: "",
+                            ),
+                        )
+                        isConnected = true
+                        authStatus = null
+                    }
+                    result.onFailure { e ->
+                        authStatus = "Failed: ${e.message}"
+                    }
+                    isExchanging = false
+                }
+            },
+            onError = { error ->
+                showWebView = false
+                authStatus = "Auth error: $error"
+            },
+        )
+        return
+    }
+
+    // Exchanging token - show progress
+    if (isExchanging) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator()
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = authStatus ?: "Connecting…",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
+        return
+    }
 
     Scaffold { padding ->
         LazyColumn(
@@ -154,133 +211,30 @@ fun RideVaultMainScreen(
                             OutlinedButton(onClick = {
                                 onDisconnectStrava()
                                 isConnected = false
-                                showAuthFlow = false
                             }) {
                                 Text("Disconnect")
                             }
-                        } else if (!showAuthFlow) {
+                        } else {
                             Text(
                                 text = "Connect to enable automatic ride uploads with correct bike tagging",
                                 style = MaterialTheme.typography.bodyMedium,
                             )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Button(onClick = { showAuthFlow = true }) {
-                                Text("Connect to Strava")
-                            }
-                        } else {
-                            // Manual code-entry auth flow
-                            Text(
-                                text = "Step 1: Scan this QR code with your phone:",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            QrCodeImage(
-                                content = authUrl,
-                                size = 200.dp,
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text(
-                                text = "Step 2: Log in and authorize RideVault",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text(
-                                text = "Step 3: Copy the \"code\" from the redirect URL and enter it below:",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "The URL will look like: http://localhost/...?code=COPY_THIS_PART",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
 
-                            OutlinedTextField(
-                                value = authCode,
-                                onValueChange = {
-                                    authCode = it
-                                    authError = null
-                                },
-                                label = { Text("Authorization code") },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                enabled = !isExchanging,
-                            )
-
-                            if (authError != null) {
+                            if (authStatus != null) {
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    text = authError!!,
+                                    text = authStatus!!,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.error,
                                 )
                             }
 
                             Spacer(modifier = Modifier.height(8.dp))
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                Button(
-                                    onClick = {
-                                        val code = authCode.trim()
-                                        if (code.isEmpty()) {
-                                            authError = "Enter the authorization code"
-                                            return@Button
-                                        }
-                                        isExchanging = true
-                                        authError = null
-                                        scope.launch {
-                                            val result = withContext(Dispatchers.IO) {
-                                                api.exchangeToken(
-                                                    clientId = BuildConfig.STRAVA_CLIENT_ID,
-                                                    clientSecret = BuildConfig.STRAVA_CLIENT_SECRET,
-                                                    code = code,
-                                                )
-                                            }
-                                            result.onSuccess { tokenResponse ->
-                                                tokenStore.saveToken(
-                                                    StravaTokenStore.TokenData(
-                                                        accessToken = tokenResponse.accessToken,
-                                                        refreshToken = tokenResponse.refreshToken,
-                                                        expiresAt = tokenResponse.expiresAt,
-                                                        athleteId = tokenResponse.athlete?.id ?: 0,
-                                                        athleteFirstName = tokenResponse.athlete?.firstName ?: "",
-                                                    ),
-                                                )
-                                                isConnected = true
-                                                showAuthFlow = false
-                                                authCode = ""
-                                            }
-                                            result.onFailure { e ->
-                                                authError = "Failed: ${e.message}"
-                                            }
-                                            isExchanging = false
-                                        }
-                                    },
-                                    enabled = !isExchanging,
-                                ) {
-                                    if (isExchanging) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.padding(end = 8.dp),
-                                            strokeWidth = 2.dp,
-                                        )
-                                    }
-                                    Text("Submit")
-                                }
-                                OutlinedButton(
-                                    onClick = {
-                                        showAuthFlow = false
-                                        authCode = ""
-                                        authError = null
-                                    },
-                                    enabled = !isExchanging,
-                                ) {
-                                    Text("Cancel")
-                                }
+                            Button(onClick = {
+                                authStatus = null
+                                showWebView = true
+                            }) {
+                                Text("Connect to Strava")
                             }
                         }
                     }
