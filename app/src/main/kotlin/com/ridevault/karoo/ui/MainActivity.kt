@@ -180,12 +180,12 @@ fun UploadConfirmationScreen(
     var showAuthScreen by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    // Fetch the user's Strava bikes on first load
+    // Fetch the user's Strava bikes on first load (refreshes token if expired)
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
-            val token = tokenStore.getToken()
-            if (token != null) {
-                val result = api.getAthlete(token.accessToken)
+            val accessToken = tokenStore.getValidAccessToken(api)
+            if (accessToken != null) {
+                val result = api.getAthlete(accessToken)
                 result.onSuccess { athlete ->
                     bikes = athlete.bikes
                     Timber.i("Loaded ${athlete.bikes.size} bikes from Strava")
@@ -214,9 +214,9 @@ fun UploadConfirmationScreen(
                 uploadError = null
                 scope.launch {
                     withContext(Dispatchers.IO) {
-                        val token = tokenStore.getToken()
-                        if (token != null) {
-                            api.getAthlete(token.accessToken).onSuccess { athlete ->
+                        val accessToken = tokenStore.getValidAccessToken(api)
+                        if (accessToken != null) {
+                            api.getAthlete(accessToken).onSuccess { athlete ->
                                 bikes = athlete.bikes
                             }
                         }

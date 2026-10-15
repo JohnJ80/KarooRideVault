@@ -102,38 +102,5 @@ class StravaUploader(private val context: Context) {
         return UploadResult.Processing(uploadId)
     }
 
-    /**
-     * Get a valid access token, refreshing if expired.
-     */
-    private fun getValidAccessToken(): String? {
-        val token = tokenStore.getToken() ?: return null
-
-        if (!tokenStore.isExpired()) {
-            return token.accessToken
-        }
-
-        Timber.i("Access token expired, refreshing...")
-        val refreshResult = api.refreshToken(
-            clientId = BuildConfig.STRAVA_CLIENT_ID,
-            clientSecret = BuildConfig.STRAVA_CLIENT_SECRET,
-            refreshToken = token.refreshToken,
-        )
-
-        return refreshResult.fold(
-            onSuccess = { response ->
-                tokenStore.saveToken(
-                    token.copy(
-                        accessToken = response.accessToken,
-                        refreshToken = response.refreshToken,
-                        expiresAt = response.expiresAt,
-                    ),
-                )
-                response.accessToken
-            },
-            onFailure = { e ->
-                Timber.e(e, "Token refresh failed")
-                null
-            },
-        )
-    }
+    private fun getValidAccessToken(): String? = tokenStore.getValidAccessToken(api)
 }

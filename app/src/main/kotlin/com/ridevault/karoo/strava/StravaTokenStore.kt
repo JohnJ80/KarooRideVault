@@ -2,6 +2,7 @@ package com.ridevault.karoo.strava
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.ridevault.karoo.BuildConfig
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -62,5 +63,41 @@ class StravaTokenStore(context: Context) {
     fun isExpired(): Boolean {
         val token = getToken() ?: return true
         return System.currentTimeMillis() / 1000 >= token.expiresAt
+    }
+
+    /**
+     * Get a valid access token, refreshing if expired.
+     * Used by both the uploader and the UI when fetching bikes.
+     */
+    fun getValidAccessToken(api: StravaApi): String? {
+        val token = getToken() ?: return null
+
+        if (!isExpired()) {
+            return token.accessToken
+        }
+
+        Timber.i("Access token expired, refreshing...")
+        val refreshResult = api.refreshToken(
+            clientId = BuildConfig.STRAVA_CLIENT_ID,
+            clientSecret = BuildConfig.STRAVA_CLIENT_SECRET,
+            refreshToken = token.refreshToken,
+        )
+
+        return refreshResult.fold(
+            onSuccess = { response ->
+                saveToken(
+                    token.copy(
+                        accessToken = response.accessToken,
+                        refreshToken = response.refreshToken,
+                        expiresAt = response.expiresAt,
+                    ),
+                )
+                response.accessToken
+            },
+            onFailure = { e ->
+                Timber.e(e, "Token refresh failed")
+                null
+            },
+        )
     }
 }
