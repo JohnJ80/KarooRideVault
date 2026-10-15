@@ -1,6 +1,7 @@
 package com.ridevault.karoo.ui
 
 import android.annotation.SuppressLint
+import android.graphics.Bitmap
 import android.net.Uri
 import android.view.ViewGroup
 import android.webkit.CookieManager
@@ -41,9 +42,17 @@ fun StravaWebViewAuth(
                 settings.apply {
                     javaScriptEnabled = true
                     domStorageEnabled = true
-                    // Use desktop user agent to avoid mobile "get the app" prompts
-                    userAgentString = "Mozilla/5.0 (Linux; Android) AppleWebKit/537.36 " +
-                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    // Full desktop user agent — no "Android" or "Mobile" so Strava
+                    // serves the desktop login page without "get the app" banners
+                    userAgentString = "Mozilla/5.0 (X11; Linux x86_64) " +
+                        "AppleWebKit/537.36 (KHTML, like Gecko) " +
+                        "Chrome/120.0.0.0 Safari/537.36"
+                    // Desktop viewport so the page lays out at desktop width
+                    useWideViewPort = true
+                    loadWithOverviewMode = true
+                    // Allow pinch-zoom on the small Karoo screen
+                    builtInZoomControls = true
+                    displayZoomControls = false
                 }
 
                 // Enable cookies for Strava login session
@@ -54,6 +63,51 @@ fun StravaWebViewAuth(
                 }
 
                 webViewClient = object : WebViewClient() {
+                    override fun onPageStarted(
+                        view: WebView?,
+                        url: String?,
+                        favicon: Bitmap?,
+                    ) {
+                        super.onPageStarted(view, url, favicon)
+                        // Inject CSS early to hide app-download banners
+                        view?.evaluateJavascript(
+                            """
+                            (function() {
+                                var style = document.createElement('style');
+                                style.textContent = '[class*="app-banner"], [class*="AppBanner"], ' +
+                                    '[class*="smart-banner"], [class*="SmartBanner"], ' +
+                                    '[id*="app-banner"], [id*="branch-banner"], ' +
+                                    '.btn-get-app, .mobile-app-banner { display: none !important; }';
+                                document.head.appendChild(style);
+                            })();
+                            """.trimIndent(),
+                            null,
+                        )
+                    }
+
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        super.onPageFinished(view, url)
+                        // Remove app-download banners after page loads
+                        view?.evaluateJavascript(
+                            """
+                            (function() {
+                                var selectors = [
+                                    '[class*="app-banner"]', '[class*="AppBanner"]',
+                                    '[class*="smart-banner"]', '[class*="SmartBanner"]',
+                                    '[id*="app-banner"]', '[id*="branch-banner"]',
+                                    '.btn-get-app', '.mobile-app-banner'
+                                ];
+                                selectors.forEach(function(sel) {
+                                    document.querySelectorAll(sel).forEach(function(el) {
+                                        el.remove();
+                                    });
+                                });
+                            })();
+                            """.trimIndent(),
+                            null,
+                        )
+                    }
+
                     override fun shouldOverrideUrlLoading(
                         view: WebView?,
                         request: WebResourceRequest?,
