@@ -107,8 +107,7 @@ class MainActivity : ComponentActivity() {
         val action = intent.getStringExtra("action")
         val fitFilePath = intent.getStringExtra("fit_file_path")
         val fitFileName = intent.getStringExtra("fit_file_name")
-        val initialGearId = intent.getStringExtra("gear_id")
-        val initialBikeName = intent.getStringExtra("bike_name") ?: "Unknown bike"
+        val rideProfileName = intent.getStringExtra("ride_profile_name")
 
         setContent {
             MaterialTheme {
@@ -118,8 +117,7 @@ class MainActivity : ComponentActivity() {
                         UploadConfirmationScreen(
                             fitFilePath = fitFilePath,
                             fitFileName = fitFileName,
-                            initialGearId = initialGearId,
-                            initialBikeName = initialBikeName,
+                            rideProfileName = rideProfileName,
                             tokenStore = tokenStore,
                             api = api,
                             karooSystem = karooSystem,
@@ -173,8 +171,7 @@ class MainActivity : ComponentActivity() {
 fun UploadConfirmationScreen(
     fitFilePath: String,
     fitFileName: String,
-    initialGearId: String?,
-    initialBikeName: String,
+    rideProfileName: String?,
     tokenStore: StravaTokenStore,
     api: StravaApi,
     karooSystem: KarooSystemService,
@@ -190,8 +187,8 @@ fun UploadConfirmationScreen(
         if (fitFile.exists()) dateFormat.format(Date(fitFile.lastModified())) else fitFileName
     }
 
-    var selectedGearId by remember { mutableStateOf(initialGearId) }
-    var selectedBikeName by remember { mutableStateOf(initialBikeName) }
+    var selectedGearId by remember { mutableStateOf<String?>(null) }
+    var selectedBikeName by remember { mutableStateOf("Select bike…") }
     var bikes by remember { mutableStateOf<List<StravaApi.Bike>>(emptyList()) }
     var loadingBikes by remember { mutableStateOf(true) }
     var bikeLoadError by remember { mutableStateOf<String?>(null) }
@@ -331,9 +328,28 @@ fun UploadConfirmationScreen(
                         Timber.i("No Karoo bike profiles — showing all ${stravaBikes.size} Strava bikes")
                     }
 
+                    // Auto-select bike: match ride profile name → bike name, or single bike
                     if (selectedGearId == null && bikes.isNotEmpty()) {
-                        selectedGearId = bikes.first().id
-                        selectedBikeName = bikes.first().name
+                        val autoSelect = if (rideProfileName != null) {
+                            // Try exact name match first (ride profile name = bike name)
+                            bikes.find { it.name.equals(rideProfileName, ignoreCase = true) }
+                                // Then try contains match (e.g. profile "Domane" matches bike "Trek Domane+")
+                                ?: bikes.find {
+                                    it.name.contains(rideProfileName, ignoreCase = true) ||
+                                        rideProfileName.contains(it.name, ignoreCase = true)
+                                }
+                        } else null
+
+                        val selected = autoSelect
+                            ?: if (bikes.size == 1) bikes.first() else null
+
+                        if (selected != null) {
+                            selectedGearId = selected.id
+                            selectedBikeName = selected.name
+                            Timber.i("Auto-selected bike: ${selected.name} (profile=$rideProfileName)")
+                        } else {
+                            Timber.i("Multiple bikes, no profile match — user must pick (profile=$rideProfileName, bikes=${bikes.map { it.name }})")
+                        }
                     }
                     waitingForWifi = false
                     loadingBikes = false

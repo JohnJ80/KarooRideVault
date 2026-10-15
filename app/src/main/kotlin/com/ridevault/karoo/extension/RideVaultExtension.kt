@@ -4,6 +4,7 @@ import android.content.Intent
 import com.ridevault.karoo.ui.MainActivity
 import io.hammerhead.karooext.KarooSystemService
 import io.hammerhead.karooext.extension.KarooExtension
+import io.hammerhead.karooext.models.ActiveRideProfile
 import io.hammerhead.karooext.models.RideState
 import io.hammerhead.karooext.models.SystemNotification
 import com.ridevault.karoo.mapping.SensorBikeMapper
@@ -46,6 +47,7 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var rideMonitorJob: Job? = null
     private var sessionActive = false
+    private var activeRideProfileName: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -58,6 +60,12 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
         karooSystem.connect { connected ->
             Timber.i("RideVault Karoo connected: $connected")
             if (connected) {
+                // Track the active ride profile so we know which profile was used when ride ends
+                karooSystem.addConsumer { profile: ActiveRideProfile ->
+                    activeRideProfileName = profile.profile.name
+                    Timber.i("Active ride profile: ${profile.profile.name} (type=${profile.profile.defaultActivityType})")
+                }
+
                 if (tokenStore.hasToken()) {
                     val pendingCount = pendingStore.pendingCount()
                     val subText = if (pendingCount > 0) {
@@ -178,16 +186,14 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
             }
 
             // Launch the upload confirmation screen
-            val bikeMatch = mapper.getDefaultBike()
-            Timber.i("Launching upload confirmation — file: ${fitFile.name}, bike: ${bikeMatch?.bikeName ?: "none"}")
+            Timber.i("Launching upload confirmation — file: ${fitFile.name}, rideProfile: ${activeRideProfileName ?: "unknown"}")
 
             val intent = Intent(applicationContext, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                 putExtra("action", "confirm_upload")
                 putExtra("fit_file_path", fitFile.absolutePath)
                 putExtra("fit_file_name", fitFile.name)
-                putExtra("gear_id", bikeMatch?.gearId)
-                putExtra("bike_name", bikeMatch?.bikeName ?: "Unknown bike")
+                putExtra("ride_profile_name", activeRideProfileName)
             }
             try {
                 applicationContext.startActivity(intent)
