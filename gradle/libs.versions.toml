@@ -53,6 +53,9 @@ kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutine
 # Material (XML theme support)
 google-material = { module = "com.google.android.material:material", version = "1.12.0" }
 
+# QR Code generation
+zxing-core = { module = "com.google.zxing:core", version = "3.5.3" }
+
 # Logging
 timber = { module = "com.jakewharton.timber:timber", version = "5.0.1" }
 

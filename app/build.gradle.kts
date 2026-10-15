@@ -98,6 +98,9 @@ dependencies {
     // Material (XML theme)
     implementation(libs.google.material)
 
+    // QR Code generation
+    implementation(libs.zxing.core)
+
     // Logging
     implementation(libs.timber)
 

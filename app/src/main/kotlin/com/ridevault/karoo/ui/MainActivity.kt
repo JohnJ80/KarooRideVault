@@ -32,7 +32,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ridevault.karoo.BuildConfig
 import com.ridevault.karoo.mapping.SensorBikeMapper
@@ -171,27 +170,24 @@ fun RideVaultMainScreen(
                         } else {
                             // Manual code-entry auth flow
                             Text(
-                                text = "Step 1: Open this URL on your phone:",
+                                text = "Step 1: Scan this QR code with your phone:",
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Medium,
                             )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = authUrl,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.primary,
-                                maxLines = 4,
-                                overflow = TextOverflow.Ellipsis,
+                            Spacer(modifier = Modifier.height(8.dp))
+                            QrCodeImage(
+                                content = authUrl,
+                                size = 200.dp,
                             )
                             Spacer(modifier = Modifier.height(12.dp))
                             Text(
-                                text = "Step 2: Authorize RideVault on Strava",
+                                text = "Step 2: Log in and authorize RideVault",
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Medium,
                             )
                             Spacer(modifier = Modifier.height(12.dp))
                             Text(
-                                text = "Step 3: Copy the \"code\" from the redirect URL and paste it below:",
+                                text = "Step 3: Copy the \"code\" from the redirect URL and enter it below:",
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Medium,
                             )
