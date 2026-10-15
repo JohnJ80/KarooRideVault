@@ -42,15 +42,13 @@ fun StravaWebViewAuth(
                 settings.apply {
                     javaScriptEnabled = true
                     domStorageEnabled = true
-                    // Full desktop user agent — no "Android" or "Mobile" so Strava
-                    // serves the desktop login page without "get the app" banners
+                    // Desktop user agent so Strava skips "get the app" banners,
+                    // but keep mobile viewport so the page fits the Karoo screen
                     userAgentString = "Mozilla/5.0 (X11; Linux x86_64) " +
                         "AppleWebKit/537.36 (KHTML, like Gecko) " +
                         "Chrome/120.0.0.0 Safari/537.36"
-                    // Desktop viewport so the page lays out at desktop width
-                    useWideViewPort = true
-                    loadWithOverviewMode = true
-                    // Allow pinch-zoom on the small Karoo screen
+                    useWideViewPort = false
+                    loadWithOverviewMode = false
                     builtInZoomControls = true
                     displayZoomControls = false
                 }
@@ -87,21 +85,33 @@ fun StravaWebViewAuth(
 
                     override fun onPageFinished(view: WebView?, url: String?) {
                         super.onPageFinished(view, url)
-                        // Remove app-download banners after page loads
+                        // Remove banners/headers/footers and make the login form
+                        // fill the small Karoo screen
                         view?.evaluateJavascript(
                             """
                             (function() {
+                                // Remove app-download banners
                                 var selectors = [
                                     '[class*="app-banner"]', '[class*="AppBanner"]',
                                     '[class*="smart-banner"]', '[class*="SmartBanner"]',
                                     '[id*="app-banner"]', '[id*="branch-banner"]',
-                                    '.btn-get-app', '.mobile-app-banner'
+                                    '.btn-get-app', '.mobile-app-banner',
+                                    // Also hide nav/header/footer to save screen space
+                                    'header', 'nav', 'footer',
+                                    '[class*="Header"]', '[class*="header"]',
+                                    '[class*="Footer"]', '[class*="footer"]',
+                                    '[class*="Nav"]'
                                 ];
                                 selectors.forEach(function(sel) {
                                     document.querySelectorAll(sel).forEach(function(el) {
-                                        el.remove();
+                                        el.style.display = 'none';
                                     });
                                 });
+                                // Scroll to the first input field
+                                var firstInput = document.querySelector('input[type="email"], input[type="text"], input[name="email"]');
+                                if (firstInput) {
+                                    firstInput.scrollIntoView({behavior: 'smooth', block: 'center'});
+                                }
                             })();
                             """.trimIndent(),
                             null,
