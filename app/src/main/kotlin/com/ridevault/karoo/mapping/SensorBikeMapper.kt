@@ -1,7 +1,6 @@
 package com.ridevault.karoo.mapping
 
 import android.content.Context
-import io.hammerhead.karooext.models.SavedDevices.SavedDevice
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -23,6 +22,7 @@ class SensorBikeMapper(private val context: Context) {
 
     companion object {
         private const val MAPPING_FILE = "sensor_bike_mapping.json"
+        private const val DEFAULT_BIKE_PREF = "default_bike_gear_id"
         private val json = Json {
             prettyPrint = true
             ignoreUnknownKeys = true
@@ -92,27 +92,47 @@ class SensorBikeMapper(private val context: Context) {
     }
 
     /**
-     * Try to detect which bike is being used based on connected sensors.
+     * Get the default bike to use for uploads.
      *
-     * Matches enabled sensors against the mapping table.
-     * Returns the first match (usually the power meter).
+     * Returns the first mapping entry, or null if no mappings exist.
+     * The user can configure their default bike in the UI.
      */
-    fun detectBike(
-        enabledDevices: List<SavedDevice>,
-        mapping: MappingFile,
-    ): BikeMatch? {
-        for (device in enabledDevices) {
-            val match = mapping.mappings.find { it.sensorId == device.id }
+    fun getDefaultBike(): BikeMatch? {
+        val mapping = loadMapping() ?: return null
+        val defaultGearId = context.getSharedPreferences("ridevault", Context.MODE_PRIVATE)
+            .getString(DEFAULT_BIKE_PREF, null)
+
+        // If user set a default, use that
+        if (defaultGearId != null) {
+            val match = mapping.mappings.find { it.gearId == defaultGearId }
             if (match != null) {
                 return BikeMatch(
                     bikeName = match.bikeName,
                     gearId = match.gearId,
-                    matchedSensorId = device.id,
-                    matchedSensorName = device.name ?: match.sensorName,
+                    matchedSensorId = match.sensorId,
+                    matchedSensorName = match.sensorName,
                 )
             }
         }
-        return null
+
+        // Otherwise use the first mapping
+        val first = mapping.mappings.firstOrNull() ?: return null
+        return BikeMatch(
+            bikeName = first.bikeName,
+            gearId = first.gearId,
+            matchedSensorId = first.sensorId,
+            matchedSensorName = first.sensorName,
+        )
+    }
+
+    /**
+     * Set the default bike for uploads.
+     */
+    fun setDefaultBike(gearId: String) {
+        context.getSharedPreferences("ridevault", Context.MODE_PRIVATE)
+            .edit()
+            .putString(DEFAULT_BIKE_PREF, gearId)
+            .apply()
     }
 
     /**
@@ -150,17 +170,5 @@ class SensorBikeMapper(private val context: Context) {
             mappings = current.mappings.filter { it.sensorId != sensorId },
         )
         saveMapping(updated)
-    }
-
-    /**
-     * Check if there are any unmapped sensors in the enabled device list.
-     */
-    fun findUnmappedSensors(
-        enabledDevices: List<SavedDevice>,
-        mapping: MappingFile?,
-    ): List<SavedDevice> {
-        if (mapping == null) return enabledDevices
-        val mappedIds = mapping.mappings.map { it.sensorId }.toSet()
-        return enabledDevices.filter { it.id !in mappedIds }
     }
 }

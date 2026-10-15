@@ -1,35 +1,36 @@
 package com.ridevault.karoo.extension
 
-import android.content.Intent
 import io.hammerhead.karooext.KarooSystemService
 import io.hammerhead.karooext.extension.KarooExtension
-import io.hammerhead.karooext.models.InRideAlert
 import io.hammerhead.karooext.models.RideState
-import io.hammerhead.karooext.models.SavedDevices
 import io.hammerhead.karooext.models.SystemNotification
 import com.ridevault.karoo.R
 import com.ridevault.karoo.mapping.SensorBikeMapper
 import com.ridevault.karoo.strava.StravaTokenStore
 import com.ridevault.karoo.strava.StravaUploader
 import com.ridevault.karoo.upload.FitFileFinder
-import com.ridevault.karoo.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import timber.log.Timber
 
 /**
  * RideVault Karoo Extension
  *
- * Monitors ride state and sensor connections to:
- * 1. Detect which bike is being ridden (via sensor-to-bike mapping)
- * 2. After ride ends, upload .FIT file to Strava with correct gear_id
+ * Monitors ride state to:
+ * 1. Detect when a ride ends
+ * 2. Upload .FIT file to Strava with the correct gear_id (bike)
  * 3. Handle stuck/failed uploads
+ *
+ * Bike selection uses the user's configured default bike mapping.
  */
 class RideVaultExtension : KarooExtension("ridevault", "0.1.0") {
 
@@ -39,54 +40,64 @@ class RideVaultExtension : KarooExtension("ridevault", "0.1.0") {
     private lateinit var uploader: StravaUploader
     private lateinit var fitFinder: FitFileFinder
 
-    private var serviceJob: Job? = null
-    private var detectedBikeName: String? = null
-    private var detectedGearId: String? = null
+    private var rideMonitorJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
-        karooSystem = KarooSystemService(this)
+        karooSystem = KarooSystemService(applicationContext)
         mapper = SensorBikeMapper(this)
         tokenStore = StravaTokenStore(this)
         uploader = StravaUploader(this)
         fitFinder = FitFileFinder(this)
 
-        serviceJob = CoroutineScope(Dispatchers.IO).launch {
-            karooSystem.connect { connected ->
-                if (connected) {
-                    Timber.i("RideVault connected to Karoo system")
-                    karooSystem.dispatch(
-                        SystemNotification(
-                            "rv-started",
-                            "RideVault active",
-                            action = "Open",
-                            actionIntent = "com.ridevault.karoo.MAIN",
-                        ),
-                    )
-                }
+        karooSystem.connect { connected ->
+            if (connected) {
+                Timber.i("RideVault connected to Karoo system")
+                karooSystem.dispatch(
+                    SystemNotification(
+                        "rv-started",
+                        "RideVault active",
+                        action = "Open",
+                        actionIntent = "com.ridevault.karoo.MAIN",
+                    ),
+                )
             }
+        }
 
-            // Monitor ride state transitions
-            launch { monitorRideState() }
-
-            // Monitor sensor connections for bike detection
-            launch { monitorSensors() }
+        // Monitor ride state transitions
+        rideMonitorJob = CoroutineScope(Dispatchers.IO).launch {
+            monitorRideState()
         }
     }
 
     /**
-     * Watch ride state. When a ride ends (Recording/Paused → Idle),
-     * trigger the upload flow with the detected bike.
+     * Create a Flow of RideState updates using the karoo-ext addConsumer API.
+     */
+    private fun KarooSystemService.streamRideState(): Flow<RideState> {
+        return callbackFlow {
+            val listenerId = addConsumer { rideState: RideState ->
+                trySendBlocking(rideState)
+            }
+            awaitClose {
+                removeConsumer(listenerId)
+            }
+        }
+    }
+
+    /**
+     * Watch ride state. When a ride ends (Recording/Paused -> Idle),
+     * trigger the upload flow with the configured bike.
      */
     private suspend fun monitorRideState() {
         var wasRiding = false
-        karooSystem.consumerFlow<RideState>()
+        karooSystem.streamRideState()
             .distinctUntilChanged()
             .collectLatest { state ->
                 when (state) {
                     is RideState.Recording -> {
                         wasRiding = true
-                        Timber.i("Ride started/resumed — detected bike: $detectedBikeName")
+                        val bike = mapper.getDefaultBike()
+                        Timber.i("Ride started/resumed — configured bike: ${bike?.bikeName ?: "none"}")
                     }
                     is RideState.Paused -> {
                         wasRiding = true
@@ -102,54 +113,16 @@ class RideVaultExtension : KarooExtension("ridevault", "0.1.0") {
     }
 
     /**
-     * Watch connected sensors. When sensors are connected,
-     * look up the mapping to determine which bike is being used.
-     */
-    private suspend fun monitorSensors() {
-        karooSystem.consumerFlow<SavedDevices>()
-            .collectLatest { savedDevices ->
-                val enabledDevices = savedDevices.devices.filter { it.enabled }
-                if (enabledDevices.isEmpty()) return@collectLatest
-
-                val mapping = mapper.loadMapping()
-                if (mapping == null) {
-                    Timber.w("No sensor-bike mapping found")
-                    return@collectLatest
-                }
-
-                // Try to match enabled sensors against our mapping
-                val match = mapper.detectBike(enabledDevices, mapping)
-                if (match != null) {
-                    detectedBikeName = match.bikeName
-                    detectedGearId = match.gearId
-                    Timber.i("Bike detected: ${match.bikeName} (gear_id: ${match.gearId})")
-                } else {
-                    // Unknown sensors — notify user to set up mapping
-                    val unknownIds = enabledDevices.map { it.id }
-                    Timber.w("No bike match for sensors: $unknownIds")
-                    detectedBikeName = null
-                    detectedGearId = null
-
-                    if (tokenStore.hasToken()) {
-                        karooSystem.dispatch(
-                            SystemNotification(
-                                "rv-unknown-sensor",
-                                getString(R.string.notification_unknown_sensor),
-                                action = "Set up",
-                                actionIntent = "com.ridevault.karoo.MAIN",
-                            ),
-                        )
-                    }
-                }
-            }
-    }
-
-    /**
      * Called when a ride transitions to Idle after recording.
      * Finds the most recent .FIT file and uploads to Strava with gear_id.
      */
     private fun onRideEnded() {
-        Timber.i("Ride ended — bike: $detectedBikeName, gear_id: $detectedGearId")
+        // Look up the configured bike
+        val bikeMatch = mapper.getDefaultBike()
+        val bikeName = bikeMatch?.bikeName ?: "Unknown bike"
+        val gearId = bikeMatch?.gearId
+
+        Timber.i("Ride ended — bike: $bikeName, gear_id: $gearId")
 
         if (!tokenStore.hasToken()) {
             Timber.w("Strava not connected — skipping upload")
@@ -164,9 +137,6 @@ class RideVaultExtension : KarooExtension("ridevault", "0.1.0") {
             )
             return
         }
-
-        val bikeName = detectedBikeName ?: "Unknown bike"
-        val gearId = detectedGearId
 
         // Launch upload on IO dispatcher
         CoroutineScope(Dispatchers.IO).launch {
@@ -213,8 +183,6 @@ class RideVaultExtension : KarooExtension("ridevault", "0.1.0") {
                     )
                 }
                 is StravaUploader.UploadResult.Processing -> {
-                    // Strava is still processing — mark uploaded to avoid retries,
-                    // it will appear on Strava shortly
                     fitFinder.markUploaded(fitFile)
                     Timber.i("Upload submitted, Strava still processing (id=${result.uploadId})")
                     karooSystem.dispatch(
@@ -242,8 +210,8 @@ class RideVaultExtension : KarooExtension("ridevault", "0.1.0") {
     }
 
     override fun onDestroy() {
-        serviceJob?.cancel()
-        serviceJob = null
+        rideMonitorJob?.cancel()
+        rideMonitorJob = null
         karooSystem.disconnect()
         super.onDestroy()
     }
