@@ -19,6 +19,9 @@ android {
         // Strava OAuth — replace with your own app credentials
         buildConfigField("String", "STRAVA_CLIENT_ID", "\"${project.findProperty("strava.clientId") ?: ""}\"")
         buildConfigField("String", "STRAVA_CLIENT_SECRET", "\"${project.findProperty("strava.clientSecret") ?: ""}\"")
+
+        // Auth relay URL (Cloudflare Worker) — set in gradle.properties
+        buildConfigField("String", "AUTH_RELAY_URL", "\"${project.findProperty("relay.url") ?: ""}\"")
     }
 
     signingConfigs {

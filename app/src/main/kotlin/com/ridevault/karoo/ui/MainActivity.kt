@@ -4,7 +4,6 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,7 +15,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -27,7 +25,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,18 +33,15 @@ import androidx.compose.ui.unit.dp
 import com.ridevault.karoo.BuildConfig
 import com.ridevault.karoo.mapping.SensorBikeMapper
 import com.ridevault.karoo.strava.StravaApi
-import com.ridevault.karoo.strava.StravaAuthActivity
 import com.ridevault.karoo.strava.StravaTokenStore
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * Main configuration UI for RideVault on Karoo.
  *
- * Strava auth uses an in-app WebView that handles login
- * and automatically intercepts the OAuth redirect to capture
- * the authorization code — no phone or manual typing needed.
+ * Strava auth uses a relay flow:
+ * 1. QR code on screen → scan with phone → log in on phone
+ * 2. Phone shows a 6-digit PIN → type it on the Karoo
+ * 3. App fetches the token from the relay → connected
  */
 class MainActivity : ComponentActivity() {
 
@@ -86,72 +80,22 @@ fun RideVaultMainScreen(
     val token = tokenStore.getToken()
     val mapping = mapper.loadMapping()
 
-    // Auth flow state
-    var showWebView by remember { mutableStateOf(false) }
-    var authStatus by remember { mutableStateOf<String?>(null) }
-    var isExchanging by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
+    // Show the auth screen when user taps Connect
+    var showAuthScreen by remember { mutableStateOf(false) }
 
-    val authUrl = StravaAuthActivity.buildAuthUrl().toString()
-
-    // Full-screen WebView for Strava login
-    if (showWebView && !isExchanging) {
-        StravaWebViewAuth(
-            authUrl = authUrl,
-            onCodeReceived = { code ->
-                showWebView = false
-                isExchanging = true
-                authStatus = "Connecting to Strava…"
-                scope.launch {
-                    val result = withContext(Dispatchers.IO) {
-                        api.exchangeToken(
-                            clientId = BuildConfig.STRAVA_CLIENT_ID,
-                            clientSecret = BuildConfig.STRAVA_CLIENT_SECRET,
-                            code = code,
-                        )
-                    }
-                    result.onSuccess { tokenResponse ->
-                        tokenStore.saveToken(
-                            StravaTokenStore.TokenData(
-                                accessToken = tokenResponse.accessToken,
-                                refreshToken = tokenResponse.refreshToken,
-                                expiresAt = tokenResponse.expiresAt,
-                                athleteId = tokenResponse.athlete?.id ?: 0,
-                                athleteFirstName = tokenResponse.athlete?.firstName ?: "",
-                            ),
-                        )
-                        isConnected = true
-                        authStatus = null
-                    }
-                    result.onFailure { e ->
-                        authStatus = "Failed: ${e.message}"
-                    }
-                    isExchanging = false
-                }
+    if (showAuthScreen) {
+        StravaAuthScreen(
+            relayUrl = BuildConfig.AUTH_RELAY_URL,
+            api = api,
+            tokenStore = tokenStore,
+            onConnected = {
+                isConnected = true
+                showAuthScreen = false
             },
-            onError = { error ->
-                showWebView = false
-                authStatus = "Auth error: $error"
+            onCancel = {
+                showAuthScreen = false
             },
         )
-        return
-    }
-
-    // Exchanging token - show progress
-    if (isExchanging) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center,
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                CircularProgressIndicator()
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = authStatus ?: "Connecting…",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            }
-        }
         return
     }
 
@@ -219,21 +163,8 @@ fun RideVaultMainScreen(
                                 text = "Connect to enable automatic ride uploads with correct bike tagging",
                                 style = MaterialTheme.typography.bodyMedium,
                             )
-
-                            if (authStatus != null) {
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = authStatus!!,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error,
-                                )
-                            }
-
                             Spacer(modifier = Modifier.height(8.dp))
-                            Button(onClick = {
-                                authStatus = null
-                                showWebView = true
-                            }) {
+                            Button(onClick = { showAuthScreen = true }) {
                                 Text("Connect to Strava")
                             }
                         }
@@ -294,7 +225,7 @@ fun RideVaultMainScreen(
                 }
             }
 
-            // Status / Info
+            // How it works
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -308,7 +239,7 @@ fun RideVaultMainScreen(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "1. Disable Strava sync in Karoo settings\n" +
+                            text = "1. Set Strava upload to Manual in Karoo/Dashboard settings\n" +
                                 "2. Connect your Strava account above\n" +
                                 "3. Ride — RideVault detects your bike from connected sensors\n" +
                                 "4. After the ride, RideVault uploads to Strava with the correct bike tagged\n\n" +

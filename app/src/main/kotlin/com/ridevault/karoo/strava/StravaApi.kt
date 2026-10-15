@@ -250,6 +250,24 @@ class StravaApi(private val tokenStore: StravaTokenStore) {
         return executeRequest(request) { }
     }
 
+    // ── Relay auth ────────────────────────────────────────────────
+
+    /**
+     * Fetch tokens from the auth relay using the 6-digit PIN.
+     * The relay has already exchanged the auth code for tokens;
+     * this just retrieves them.
+     */
+    fun fetchTokenFromRelay(relayUrl: String, pin: String): Result<TokenResponse> {
+        val request = Request.Builder()
+            .url("$relayUrl/token?pin=$pin")
+            .get()
+            .build()
+
+        return executeRequest(request) { responseBody ->
+            json.decodeFromString<TokenResponse>(responseBody)
+        }
+    }
+
     // ── Helpers ──────────────────────────────────────────────────
 
     private fun <T> executeRequest(

@@ -1,0 +1,14 @@
+name = "ridevault-auth"
+main = "worker.js"
+compatibility_date = "2024-09-01"
+
+# Create a KV namespace first:
+#   npx wrangler kv namespace create TOKENS
+# Then paste the id below.
+[[kv_namespaces]]
+binding = "TOKENS"
+id = ""          # ← paste your KV namespace id here
+
+# Set these as secrets (never commit them):
+#   npx wrangler secret put STRAVA_CLIENT_ID
+#   npx wrangler secret put STRAVA_CLIENT_SECRET
