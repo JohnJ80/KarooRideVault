@@ -1,12 +1,18 @@
 package com.ridevault.karoo.extension
 
 import android.content.Intent
+import android.os.Bundle
 import com.ridevault.karoo.ui.MainActivity
 import io.hammerhead.karooext.KarooSystemService
 import io.hammerhead.karooext.extension.KarooExtension
+import io.hammerhead.karooext.internal.KarooSystemListener
+import io.hammerhead.karooext.internal.bundleWithSerializable
 import io.hammerhead.karooext.models.ActiveRideProfile
+import io.hammerhead.karooext.models.Bikes
 import io.hammerhead.karooext.models.RideState
 import io.hammerhead.karooext.models.SystemNotification
+import io.hammerhead.karooext.aidl.IHandler
+import io.hammerhead.karooext.aidl.IKarooSystem
 import com.ridevault.karoo.mapping.SensorBikeMapper
 import com.ridevault.karoo.strava.StravaTokenStore
 import com.ridevault.karoo.upload.FitFileFinder
@@ -65,6 +71,12 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
                     activeRideProfileName = profile.profile.name
                     Timber.i("Active ride profile: ${profile.profile.name} (type=${profile.profile.defaultActivityType})")
                 }
+
+                // DEBUG: Log raw JSON for ActiveRideProfile and Bikes to discover hidden fields
+                // The SDK uses ignoreUnknownKeys=true, so extra fields (like bikeId) would be silently dropped.
+                // This interceptor captures the raw payload before deserialization.
+                logRawEventJson("ActiveRideProfile", ActiveRideProfile.Params.bundleWithSerializable(applicationContext.packageName))
+                logRawEventJson("Bikes", Bikes.Params.bundleWithSerializable(applicationContext.packageName))
 
                 if (tokenStore.hasToken()) {
                     val pendingCount = pendingStore.pendingCount()
@@ -202,6 +214,49 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
                 Timber.e(e, "Failed to launch upload confirmation activity")
             }
         }
+    }
+
+    /**
+     * DEBUG: Register a raw IHandler to intercept the JSON payload from the Karoo system
+     * BEFORE the SDK deserializes it (and drops unknown fields via ignoreUnknownKeys=true).
+     * This lets us see if fields like bikeId exist in the actual data.
+     */
+    private fun logRawEventJson(eventName: String, paramsBundle: Bundle) {
+        val listenerId = "raw-json-$eventName"
+        karooSystem.addConsumer(object : KarooSystemListener(listenerId) {
+            override fun register(controller: IKarooSystem?) {
+                val rawHandler = object : IHandler.Stub() {
+                    override fun onNext(bundle: Bundle) {
+                        val rawJson = bundle.getString("value")
+                        Timber.i("========== RAW JSON [$eventName] ==========")
+                        Timber.i("$rawJson")
+                        Timber.i("============================================")
+                    }
+
+                    override fun onError(msg: String?) {
+                        Timber.w("RAW JSON [$eventName] error: $msg")
+                    }
+
+                    override fun onComplete() {
+                        Timber.i("RAW JSON [$eventName] complete")
+                    }
+                }
+                try {
+                    controller?.addEventConsumer(listenerId, paramsBundle, rawHandler)
+                    Timber.i("Raw JSON interceptor registered for $eventName")
+                } catch (e: Exception) {
+                    Timber.e(e, "Failed to register raw JSON interceptor for $eventName")
+                }
+            }
+
+            override fun unregister(controller: IKarooSystem?) {
+                try {
+                    controller?.removeEventConsumer(listenerId)
+                } catch (e: Exception) {
+                    Timber.e(e, "Failed to unregister raw JSON interceptor for $eventName")
+                }
+            }
+        })
     }
 
     override fun onDestroy() {
