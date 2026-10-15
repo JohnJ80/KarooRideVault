@@ -95,6 +95,9 @@ dependencies {
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
 
+    // Material (XML theme)
+    implementation(libs.google.material)
+
     // Logging
     implementation(libs.timber)
 
