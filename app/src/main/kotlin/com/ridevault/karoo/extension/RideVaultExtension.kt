@@ -1,6 +1,7 @@
 package com.ridevault.karoo.extension
 
 import android.content.Intent
+import com.ridevault.karoo.ui.MainActivity
 import io.hammerhead.karooext.KarooSystemService
 import io.hammerhead.karooext.extension.KarooExtension
 import io.hammerhead.karooext.models.RideState
@@ -168,15 +169,20 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
             val bikeMatch = mapper.getDefaultBike()
             Timber.i("Launching upload confirmation — file: ${fitFile.name}, bike: ${bikeMatch?.bikeName}")
 
-            val intent = Intent("com.ridevault.karoo.MAIN").apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val intent = Intent(applicationContext, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                 putExtra("action", "confirm_upload")
                 putExtra("fit_file_path", fitFile.absolutePath)
                 putExtra("fit_file_name", fitFile.name)
                 putExtra("gear_id", bikeMatch?.gearId)
                 putExtra("bike_name", bikeMatch?.bikeName ?: "Unknown bike")
             }
-            applicationContext.startActivity(intent)
+            try {
+                applicationContext.startActivity(intent)
+                Timber.i("Upload confirmation activity launched")
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to launch upload confirmation activity")
+            }
         }
     }
 
