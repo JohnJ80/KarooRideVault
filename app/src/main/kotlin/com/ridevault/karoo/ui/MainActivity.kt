@@ -1,8 +1,12 @@
 package com.ridevault.karoo.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -70,8 +74,15 @@ import java.util.Locale
  */
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        private const val STORAGE_PERMISSION_REQUEST = 100
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Ensure we have storage permission for reading FIT files
+        ensureStoragePermission()
 
         val tokenStore = StravaTokenStore(this)
         val mapper = SensorBikeMapper(this)
@@ -122,6 +133,19 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+    }
+
+    private fun ensureStoragePermission() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            Timber.i("Requesting READ_EXTERNAL_STORAGE permission")
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE),
+                STORAGE_PERMISSION_REQUEST,
+            )
         }
     }
 }
