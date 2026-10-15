@@ -182,12 +182,14 @@ fun UploadConfirmationScreen(
     val scope = rememberCoroutineScope()
 
     var waitingForWifi by remember { mutableStateOf(false) }
+    var needsReauth by remember { mutableStateOf(false) }
 
     // Reusable bike-loading function — retries automatically while waiting for WiFi
     suspend fun loadBikes() {
         loadingBikes = true
         bikeLoadError = null
         waitingForWifi = false
+        needsReauth = false
         withContext(Dispatchers.IO) {
             Timber.i("Loading bikes — getting access token...")
             val accessToken = tokenStore.getValidAccessToken(api)
@@ -206,15 +208,17 @@ fun UploadConfirmationScreen(
                 val result = api.getAthlete(accessToken)
                 result.onSuccess { athlete ->
                     bikes = athlete.bikes
-                    Timber.i("GET /athlete succeeded — ${athlete.bikes.size} bikes, athlete=${athlete.firstName} ${athlete.lastName}")
-                    if (athlete.bikes.isEmpty()) {
-                        Timber.w("No bikes in response — token may be missing profile:read_all scope")
+                    Timber.i("GET /athlete succeeded — ${athlete.bikes.size} bikes, resource_state=${athlete.resourceState}, athlete=${athlete.firstName} ${athlete.lastName}")
+                    if (athlete.bikes.isEmpty() && athlete.resourceState <= 2) {
+                        // resource_state 2 = summary representation — token lacks profile:read_all scope
+                        Timber.w("No bikes — resource_state=${athlete.resourceState}, token missing profile:read_all scope")
+                        needsReauth = true
+                        bikeLoadError = "Reconnect Strava to enable bike selection"
                     }
                     if (selectedGearId == null && athlete.bikes.isNotEmpty()) {
                         selectedGearId = athlete.bikes.first().id
                         selectedBikeName = athlete.bikes.first().name
                     }
-                    bikeLoadError = null
                     waitingForWifi = false
                     loadingBikes = false
                     return@withContext
@@ -256,16 +260,7 @@ fun UploadConfirmationScreen(
             onConnected = {
                 showAuthScreen = false
                 uploadError = null
-                scope.launch {
-                    withContext(Dispatchers.IO) {
-                        val accessToken = tokenStore.getValidAccessToken(api)
-                        if (accessToken != null) {
-                            api.getAthlete(accessToken).onSuccess { athlete ->
-                                bikes = athlete.bikes
-                            }
-                        }
-                    }
-                }
+                scope.launch { loadBikes() }
             },
             onCancel = { showAuthScreen = false },
         )
@@ -340,7 +335,17 @@ fun UploadConfirmationScreen(
                             MaterialTheme.colorScheme.onSurfaceVariant
                         },
                     )
-                    if (bikeLoadError != null) {
+                    if (needsReauth) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                tokenStore.clearToken()
+                                showAuthScreen = true
+                            },
+                        ) {
+                            Text("Reconnect Strava", style = MaterialTheme.typography.bodySmall)
+                        }
+                    } else if (bikeLoadError != null) {
                         Spacer(modifier = Modifier.height(8.dp))
                         OutlinedButton(
                             onClick = {

@@ -44,6 +44,7 @@ class StravaApi(private val tokenStore: StravaTokenStore) {
         @SerialName("firstname") val firstName: String = "",
         @SerialName("lastname") val lastName: String = "",
         val bikes: List<Bike> = emptyList(),
+        @SerialName("resource_state") val resourceState: Int = 0,
     )
 
     @Serializable
