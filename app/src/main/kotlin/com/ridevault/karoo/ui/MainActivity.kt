@@ -42,6 +42,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ridevault.karoo.BuildConfig
 import com.ridevault.karoo.mapping.SensorBikeMapper
+import com.ridevault.karoo.strava.BikeCacheStore
 import com.ridevault.karoo.strava.StravaApi
 import com.ridevault.karoo.strava.StravaTokenStore
 import com.ridevault.karoo.strava.StravaUploader
@@ -85,6 +86,7 @@ class MainActivity : ComponentActivity() {
         val tokenStore = StravaTokenStore(this)
         val mapper = SensorBikeMapper(this)
         val api = StravaApi(tokenStore)
+        val bikeCache = BikeCacheStore(this)
         val pendingStore = PendingUploadStore(this)
         val uploader = StravaUploader(this)
         val fitFinder = FitFileFinder(this)
@@ -109,6 +111,7 @@ class MainActivity : ComponentActivity() {
                             initialBikeName = initialBikeName,
                             tokenStore = tokenStore,
                             api = api,
+                            bikeCache = bikeCache,
                             uploader = uploader,
                             fitFinder = fitFinder,
                             pendingStore = pendingStore,
@@ -158,6 +161,7 @@ fun UploadConfirmationScreen(
     initialBikeName: String,
     tokenStore: StravaTokenStore,
     api: StravaApi,
+    bikeCache: BikeCacheStore,
     uploader: StravaUploader,
     fitFinder: FitFileFinder,
     pendingStore: PendingUploadStore,
@@ -239,28 +243,38 @@ fun UploadConfirmationScreen(
                 val result = api.getAthlete(accessToken)
                 result.onSuccess { athlete ->
                     Timber.i("GET /athlete succeeded — ${athlete.bikes.size} bikes, resource_state=${athlete.resourceState}, athlete=${athlete.firstName} ${athlete.lastName}")
+                    val athleteId = athlete.id
 
-                    if (athlete.bikes.isNotEmpty()) {
-                        // Got bikes directly from detailed athlete — best case
-                        bikes = athlete.bikes
-                    } else if (athlete.resourceState <= 2) {
+                    var discoveredBikes: List<StravaApi.Bike> = athlete.bikes
+
+                    if (discoveredBikes.isEmpty() && athlete.resourceState <= 2) {
                         // Summary representation — token lacks profile:read_all scope
                         // Try fallback: discover bikes from recent activities
                         Timber.w("No bikes — resource_state=${athlete.resourceState}, trying activities fallback")
-                        val fallbackBikes = discoverBikesFromActivities(accessToken)
-                        if (fallbackBikes.isNotEmpty()) {
-                            Timber.i("Fallback succeeded — found ${fallbackBikes.size} bikes")
-                            bikes = fallbackBikes
+                        discoveredBikes = discoverBikesFromActivities(accessToken)
+                        if (discoveredBikes.isNotEmpty()) {
+                            Timber.i("Fallback succeeded — found ${discoveredBikes.size} bikes")
+                        }
+                    }
+
+                    // Merge any discovered bikes into the persistent cache
+                    if (discoveredBikes.isNotEmpty()) {
+                        bikeCache.mergeBikes(athleteId, discoveredBikes)
+                    }
+
+                    // Always use the full cache — includes bikes from previous sessions
+                    val cachedBikes = bikeCache.getCachedBikes(athleteId)
+                    if (cachedBikes.isNotEmpty()) {
+                        bikes = cachedBikes
+                        Timber.i("Using ${cachedBikes.size} bikes from cache")
+                    } else if (discoveredBikes.isEmpty()) {
+                        Timber.w("No bikes in cache or from API")
+                        bikes = emptyList()
+                        if (hasTriedReauth) {
+                            bikeLoadError = "No bikes found — upload will use Strava default"
                         } else {
-                            Timber.w("Fallback found no bikes either")
-                            bikes = emptyList()
-                            if (hasTriedReauth) {
-                                // Already reconnected once and still no luck — don't loop
-                                bikeLoadError = "No bikes found — upload will use Strava default"
-                            } else {
-                                needsReauth = true
-                                bikeLoadError = "Reconnect Strava to enable bike selection"
-                            }
+                            needsReauth = true
+                            bikeLoadError = "Reconnect Strava to enable bike selection"
                         }
                     }
 
@@ -391,6 +405,7 @@ fun UploadConfirmationScreen(
                         OutlinedButton(
                             onClick = {
                                 tokenStore.clearToken()
+                                bikeCache.clear()
                                 showAuthScreen = true
                             },
                         ) {
@@ -726,6 +741,7 @@ fun RideVaultMainScreen(
             onReconnectStrava = { showAuthScreen = true },
             onDisconnectStrava = {
                 tokenStore.clearToken()
+                bikeCache.clear()
                 isConnected = false
             },
             onFinish = onFinish,
