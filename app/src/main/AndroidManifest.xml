@@ -35,8 +35,8 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data
-                    android:scheme="karooridevault"
-                    android:host="strava-auth" />
+                    android:scheme="ridevault"
+                    android:host="karoo-auth" />
             </intent-filter>
         </activity>
 
