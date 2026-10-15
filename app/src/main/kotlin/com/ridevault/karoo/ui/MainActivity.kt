@@ -42,12 +42,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ridevault.karoo.BuildConfig
 import com.ridevault.karoo.mapping.SensorBikeMapper
-import com.ridevault.karoo.strava.BikeCacheStore
 import com.ridevault.karoo.strava.StravaApi
 import com.ridevault.karoo.strava.StravaTokenStore
 import com.ridevault.karoo.strava.StravaUploader
 import com.ridevault.karoo.upload.FitFileFinder
 import com.ridevault.karoo.upload.PendingUploadStore
+import io.hammerhead.karooext.KarooSystemService
+import io.hammerhead.karooext.models.Bikes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -77,6 +78,8 @@ class MainActivity : ComponentActivity() {
         private const val STORAGE_PERMISSION_REQUEST = 100
     }
 
+    private lateinit var karooSystem: KarooSystemService
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -86,7 +89,10 @@ class MainActivity : ComponentActivity() {
         val tokenStore = StravaTokenStore(this)
         val mapper = SensorBikeMapper(this)
         val api = StravaApi(tokenStore)
-        val bikeCache = BikeCacheStore(this)
+        karooSystem = KarooSystemService(applicationContext)
+        karooSystem.connect { connected ->
+            Timber.i("MainActivity Karoo connected: $connected")
+        }
         val pendingStore = PendingUploadStore(this)
         val uploader = StravaUploader(this)
         val fitFinder = FitFileFinder(this)
@@ -111,7 +117,7 @@ class MainActivity : ComponentActivity() {
                             initialBikeName = initialBikeName,
                             tokenStore = tokenStore,
                             api = api,
-                            bikeCache = bikeCache,
+                            karooSystem = karooSystem,
                             uploader = uploader,
                             fitFinder = fitFinder,
                             pendingStore = pendingStore,
@@ -135,6 +141,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        karooSystem.disconnect()
+        super.onDestroy()
     }
 
     private fun ensureStoragePermission() {
@@ -161,7 +172,7 @@ fun UploadConfirmationScreen(
     initialBikeName: String,
     tokenStore: StravaTokenStore,
     api: StravaApi,
-    bikeCache: BikeCacheStore,
+    karooSystem: KarooSystemService,
     uploader: StravaUploader,
     fitFinder: FitFileFinder,
     pendingStore: PendingUploadStore,
@@ -189,33 +200,67 @@ fun UploadConfirmationScreen(
     var needsReauth by remember { mutableStateOf(false) }
     var hasTriedReauth by remember { mutableStateOf(false) }
 
-    // Discover bikes from recent activities when GET /athlete returns summary (no bikes).
+    // Karoo bike profiles — populated via KarooSystemService consumer
+    var karooBikes by remember { mutableStateOf<List<Bikes.Bike>>(emptyList()) }
+
+    // Subscribe to Karoo bike profiles on launch, clean up on dispose
+    androidx.compose.runtime.DisposableEffect(karooSystem) {
+        val consumerId = karooSystem.addConsumer { event: Bikes ->
+            Timber.i("Karoo bikes updated: ${event.bikes.size} profiles")
+            karooBikes = event.bikes
+        }
+        onDispose {
+            karooSystem.removeConsumer(consumerId)
+        }
+    }
+
+    // Discover Strava bikes from recent activities when GET /athlete returns summary (no bikes).
     // Works with activity:read_all + read scopes — no profile:read_all needed.
-    suspend fun discoverBikesFromActivities(accessToken: String): List<StravaApi.Bike> {
-        Timber.i("Fallback: discovering bikes from recent activities...")
+    suspend fun discoverStravaBikes(accessToken: String): List<StravaApi.Bike> {
+        Timber.i("Discovering Strava bikes from recent activities...")
         val activitiesResult = api.getAthleteActivities(accessToken)
         val activities = activitiesResult.getOrNull()
         if (activities == null) {
-            Timber.w("Fallback: failed to fetch activities")
+            Timber.w("Failed to fetch activities")
             return emptyList()
         }
 
         val uniqueGearIds = activities.mapNotNull { it.gearId }.distinct()
-        Timber.i("Fallback: found ${uniqueGearIds.size} unique gear_ids from ${activities.size} activities")
+        Timber.i("Found ${uniqueGearIds.size} unique gear_ids from ${activities.size} activities")
         if (uniqueGearIds.isEmpty()) return emptyList()
 
         return uniqueGearIds.mapNotNull { gearId ->
             val gearResult = api.getGear(accessToken, gearId)
             gearResult.fold(
                 onSuccess = { gear ->
-                    Timber.i("Fallback: resolved gear $gearId → ${gear.name}")
+                    Timber.i("Resolved gear $gearId → ${gear.name}")
                     StravaApi.Bike(id = gear.id, name = gear.name, distance = gear.distance)
                 },
                 onFailure = { e ->
-                    Timber.w("Fallback: GET /gear/$gearId failed (${e.message}), using ID as name")
+                    Timber.w("GET /gear/$gearId failed (${e.message}), using ID as name")
                     StravaApi.Bike(id = gearId, name = gearId)
                 },
             )
+        }
+    }
+
+    // Match Karoo bike profiles to Strava bikes by name (case-insensitive).
+    // Returns only the Karoo bikes that have a matching Strava gear_id.
+    fun matchBikes(
+        karooBikeList: List<Bikes.Bike>,
+        stravaBikeList: List<StravaApi.Bike>,
+    ): List<StravaApi.Bike> {
+        if (karooBikeList.isEmpty() || stravaBikeList.isEmpty()) return emptyList()
+        val stravaByName = stravaBikeList.associateBy { it.name.lowercase().trim() }
+        return karooBikeList.mapNotNull { karooBike ->
+            val match = stravaByName[karooBike.name.lowercase().trim()]
+            if (match != null) {
+                Timber.i("Matched Karoo bike '${karooBike.name}' → Strava gear_id ${match.id}")
+                match
+            } else {
+                Timber.w("No Strava match for Karoo bike '${karooBike.name}'")
+                null
+            }
         }
     }
 
@@ -243,39 +288,42 @@ fun UploadConfirmationScreen(
                 val result = api.getAthlete(accessToken)
                 result.onSuccess { athlete ->
                     Timber.i("GET /athlete succeeded — ${athlete.bikes.size} bikes, resource_state=${athlete.resourceState}, athlete=${athlete.firstName} ${athlete.lastName}")
-                    val athleteId = athlete.id
 
-                    var discoveredBikes: List<StravaApi.Bike> = athlete.bikes
-
-                    if (discoveredBikes.isEmpty() && athlete.resourceState <= 2) {
-                        // Summary representation — token lacks profile:read_all scope
-                        // Try fallback: discover bikes from recent activities
+                    // Get Strava bikes — from athlete endpoint or activities fallback
+                    var stravaBikes: List<StravaApi.Bike> = athlete.bikes
+                    if (stravaBikes.isEmpty() && athlete.resourceState <= 2) {
                         Timber.w("No bikes — resource_state=${athlete.resourceState}, trying activities fallback")
-                        discoveredBikes = discoverBikesFromActivities(accessToken)
-                        if (discoveredBikes.isNotEmpty()) {
-                            Timber.i("Fallback succeeded — found ${discoveredBikes.size} bikes")
+                        stravaBikes = discoverStravaBikes(accessToken)
+                        if (stravaBikes.isNotEmpty()) {
+                            Timber.i("Activities fallback found ${stravaBikes.size} bikes")
                         }
                     }
 
-                    // Merge any discovered bikes into the persistent cache
-                    if (discoveredBikes.isNotEmpty()) {
-                        bikeCache.mergeBikes(athleteId, discoveredBikes)
-                    }
-
-                    // Always use the full cache — includes bikes from previous sessions
-                    val cachedBikes = bikeCache.getCachedBikes(athleteId)
-                    if (cachedBikes.isNotEmpty()) {
-                        bikes = cachedBikes
-                        Timber.i("Using ${cachedBikes.size} bikes from cache")
-                    } else if (discoveredBikes.isEmpty()) {
-                        Timber.w("No bikes in cache or from API")
+                    if (stravaBikes.isEmpty()) {
+                        Timber.w("No Strava bikes found from any source")
                         bikes = emptyList()
                         if (hasTriedReauth) {
-                            bikeLoadError = "No bikes found — upload will use Strava default"
+                            bikeLoadError = "No bikes found on Strava — upload will use Strava default"
                         } else {
                             needsReauth = true
                             bikeLoadError = "Reconnect Strava to enable bike selection"
                         }
+                    } else if (karooBikes.isNotEmpty()) {
+                        // Match Karoo bike profiles to Strava gear_ids by name
+                        val matched = matchBikes(karooBikes, stravaBikes)
+                        if (matched.isNotEmpty()) {
+                            bikes = matched
+                            Timber.i("Matched ${matched.size}/${karooBikes.size} Karoo bikes to Strava")
+                        } else {
+                            // No name matches — show Strava bikes with a warning
+                            bikes = stravaBikes
+                            bikeLoadError = "Karoo bike names don't match Strava — showing all Strava bikes"
+                            Timber.w("No Karoo→Strava name matches. Karoo: ${karooBikes.map { it.name }}, Strava: ${stravaBikes.map { it.name }}")
+                        }
+                    } else {
+                        // No Karoo bike profiles — fall back to all Strava bikes
+                        bikes = stravaBikes
+                        Timber.i("No Karoo bike profiles — showing all ${stravaBikes.size} Strava bikes")
                     }
 
                     if (selectedGearId == null && bikes.isNotEmpty()) {
@@ -405,7 +453,6 @@ fun UploadConfirmationScreen(
                         OutlinedButton(
                             onClick = {
                                 tokenStore.clearToken()
-                                bikeCache.clear()
                                 showAuthScreen = true
                             },
                         ) {
@@ -741,7 +788,6 @@ fun RideVaultMainScreen(
             onReconnectStrava = { showAuthScreen = true },
             onDisconnectStrava = {
                 tokenStore.clearToken()
-                bikeCache.clear()
                 isConnected = false
             },
             onFinish = onFinish,
