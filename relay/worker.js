@@ -68,7 +68,11 @@ function handleAuth(url, env) {
  */
 async function handleCallback(url, env) {
   const code = url.searchParams.get('code');
+  const scope = url.searchParams.get('scope');
   const error = url.searchParams.get('error');
+
+  // Log what scopes Strava actually granted (visible in Cloudflare dashboard logs)
+  console.log(`OAuth callback — granted scopes: ${scope}`);
 
   if (error || !code) {
     return htmlResponse(`
@@ -116,6 +120,7 @@ async function handleCallback(url, env) {
     <div class="pin">${pin}</div>
     <p class="note">This PIN expires in 5 minutes.</p>
     <p class="note">You can close this page after entering the PIN.</p>
+    <p class="note" style="margin-top:12px;font-size:11px;color:#bbb;">Scopes: ${scope || 'unknown'}</p>
   `);
 }
 

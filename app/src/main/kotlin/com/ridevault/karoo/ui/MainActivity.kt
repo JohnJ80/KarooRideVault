@@ -183,12 +183,17 @@ fun UploadConfirmationScreen(
     // Fetch the user's Strava bikes on first load (refreshes token if expired)
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
+            Timber.i("Loading bikes — getting access token...")
             val accessToken = tokenStore.getValidAccessToken(api)
             if (accessToken != null) {
+                Timber.i("Got access token (${accessToken.take(8)}...), calling GET /athlete")
                 val result = api.getAthlete(accessToken)
                 result.onSuccess { athlete ->
                     bikes = athlete.bikes
-                    Timber.i("Loaded ${athlete.bikes.size} bikes from Strava")
+                    Timber.i("GET /athlete succeeded — ${athlete.bikes.size} bikes, athlete=${athlete.firstName} ${athlete.lastName}")
+                    if (athlete.bikes.isEmpty()) {
+                        Timber.w("No bikes in response — token may be missing profile:read_all scope")
+                    }
                     // If no bike was pre-selected but bikes are available, default to first
                     if (selectedGearId == null && athlete.bikes.isNotEmpty()) {
                         selectedGearId = athlete.bikes.first().id
@@ -196,8 +201,10 @@ fun UploadConfirmationScreen(
                     }
                 }
                 result.onFailure { e ->
-                    Timber.w(e, "Failed to load bikes")
+                    Timber.e(e, "GET /athlete FAILED")
                 }
+            } else {
+                Timber.e("No valid access token available — cannot load bikes")
             }
             loadingBikes = false
         }
