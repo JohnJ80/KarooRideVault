@@ -8,7 +8,10 @@ import androidx.activity.compose.setContent
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,6 +26,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -382,7 +387,8 @@ fun UploadConfirmationScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp),
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         // Title
@@ -470,25 +476,18 @@ fun UploadConfirmationScreen(
                         }
                     }
                 } else {
-                    // Bike list — tap to select
-                    bikes.forEach { bike ->
-                        val isSelected = bike.id == selectedGearId
-                        val distanceKm = (bike.distance / 1000).roundToInt()
+                    // Dropdown bike selector — sorted alphabetically
+                    var expanded by remember { mutableStateOf(false) }
+                    val sortedBikes = remember(bikes) { bikes.sortedBy { it.name.lowercase() } }
+                    val displayName = if (selectedGearId == null) "No bike (Strava default)" else selectedBikeName
+
+                    Box(modifier = Modifier.fillMaxWidth()) {
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 3.dp)
-                                .clickable {
-                                    selectedGearId = bike.id
-                                    selectedBikeName = bike.name
-                                    Timber.i("User selected bike: ${bike.name} (${bike.id})")
-                                },
+                                .clickable { expanded = true },
                             colors = CardDefaults.cardColors(
-                                containerColor = if (isSelected) {
-                                    MaterialTheme.colorScheme.primaryContainer
-                                } else {
-                                    MaterialTheme.colorScheme.surfaceVariant
-                                },
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant,
                             ),
                         ) {
                             Row(
@@ -498,70 +497,57 @@ fun UploadConfirmationScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Column {
-                                    Text(
-                                        text = bike.name,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                    )
-                                    if (distanceKm > 0) {
-                                        Text(
-                                            text = "%,d km".format(distanceKm),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                }
-                                if (isSelected) {
-                                    Text(
-                                        text = "✓",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.primary,
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // "No bike" option
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 3.dp)
-                            .clickable {
-                                selectedGearId = null
-                                selectedBikeName = "No bike"
-                            },
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (selectedGearId == null) {
-                                MaterialTheme.colorScheme.primaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.surfaceVariant
-                            },
-                        ),
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = "No bike",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            if (selectedGearId == null) {
                                 Text(
-                                    text = "✓",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary,
+                                    text = displayName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Text(
+                                    text = "▼",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                         }
+                        DropdownMenu(
+                            expanded = expanded,
+                            onDismissRequest = { expanded = false },
+                        ) {
+                            sortedBikes.forEach { bike ->
+                                DropdownMenuItem(
+                                    text = { Text(bike.name) },
+                                    onClick = {
+                                        selectedGearId = bike.id
+                                        selectedBikeName = bike.name
+                                        expanded = false
+                                        Timber.i("User selected bike: ${bike.name} (${bike.id})")
+                                    },
+                                )
+                            }
+                            Divider()
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        "No bike (Strava default)",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                },
+                                onClick = {
+                                    selectedGearId = null
+                                    selectedBikeName = "No bike"
+                                    expanded = false
+                                },
+                            )
+                        }
+                    }
+
+                    // Show warning if Karoo bike names didn't match Strava
+                    if (bikeLoadError != null) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = bikeLoadError!!,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
                     }
                 }
             }
