@@ -1,18 +1,12 @@
 package com.ridevault.karoo.extension
 
 import android.content.Intent
-import android.os.Bundle
 import com.ridevault.karoo.ui.MainActivity
 import io.hammerhead.karooext.KarooSystemService
 import io.hammerhead.karooext.extension.KarooExtension
-import io.hammerhead.karooext.internal.KarooSystemListener
-import io.hammerhead.karooext.internal.bundleWithSerializable
 import io.hammerhead.karooext.models.ActiveRideProfile
-import io.hammerhead.karooext.models.Bikes
 import io.hammerhead.karooext.models.RideState
 import io.hammerhead.karooext.models.SystemNotification
-import io.hammerhead.karooext.aidl.IHandler
-import io.hammerhead.karooext.aidl.IKarooSystem
 import com.ridevault.karoo.mapping.SensorBikeMapper
 import com.ridevault.karoo.strava.StravaTokenStore
 import com.ridevault.karoo.upload.FitFileFinder
@@ -28,9 +22,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.Json
 import timber.log.Timber
-import java.util.UUID
 
 /**
  * RideVault Karoo Extension
@@ -57,9 +49,6 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
     private var sessionActive = false
     private var activeRideProfileName: String? = null
 
-    /** JSON parser that tolerates unknown fields — used to deserialize raw payloads. */
-    private val lenientJson = Json { ignoreUnknownKeys = true }
-
     override fun onCreate() {
         super.onCreate()
         karooSystem = KarooSystemService(applicationContext)
@@ -71,13 +60,12 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
         karooSystem.connect { connected ->
             Timber.i("RideVault Karoo connected: $connected")
             if (connected) {
-                // Single raw consumer for ActiveRideProfile:
-                //   1. Logs the raw JSON BEFORE SDK deserialization so we can see hidden fields
-                //   2. Extracts the profile name for ride-end bike matching
-                registerRawProfileConsumer()
-
-                // Raw consumer for Bikes — log JSON to discover hidden fields
-                registerRawBikesConsumer()
+                // Track the active ride profile so we can match its name
+                // to a Strava bike for auto-selection in the upload UI
+                karooSystem.addConsumer { profile: ActiveRideProfile ->
+                    activeRideProfileName = profile.profile.name
+                    Timber.i("Active ride profile: ${profile.profile.name} (type=${profile.profile.defaultActivityType})")
+                }
 
                 if (tokenStore.hasToken()) {
                     val pendingCount = pendingStore.pendingCount()
@@ -215,86 +203,6 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
                 Timber.e(e, "Failed to launch upload confirmation activity")
             }
         }
-    }
-
-    /**
-     * Register a raw consumer for ActiveRideProfile that mirrors the SDK's typed
-     * addConsumer pattern exactly (bundle created inside register(), UUID-based ID)
-     * but also logs the raw JSON before deserializing.
-     */
-    private fun registerRawProfileConsumer() {
-        val consumerId = UUID.randomUUID().toString()
-        karooSystem.addConsumer(object : KarooSystemListener(consumerId) {
-            override fun register(controller: IKarooSystem?) {
-                val handler = object : IHandler.Stub() {
-                    override fun onNext(bundle: Bundle) {
-                        val rawJson = bundle.getString("value")
-                        Timber.i("========== RAW JSON [ActiveRideProfile] ==========")
-                        Timber.i("$rawJson")
-                        Timber.i("============================================")
-                        // Deserialize for the profile name (same as the typed consumer would)
-                        rawJson?.let {
-                            try {
-                                val profile = lenientJson.decodeFromString<ActiveRideProfile>(it)
-                                activeRideProfileName = profile.profile.name
-                                Timber.i("Active ride profile: ${profile.profile.name} (type=${profile.profile.defaultActivityType})")
-                            } catch (e: Exception) {
-                                Timber.w(e, "Failed to deserialize ActiveRideProfile from raw JSON")
-                            }
-                        }
-                    }
-                    override fun onError(msg: String?) {
-                        Timber.w("ActiveRideProfile raw consumer error: $msg")
-                    }
-                    override fun onComplete() {
-                        Timber.i("ActiveRideProfile raw consumer complete")
-                    }
-                }
-                // Create params bundle inside register() — matches SDK pattern exactly
-                controller?.addEventConsumer(
-                    consumerId,
-                    ActiveRideProfile.Params.bundleWithSerializable(karooSystem.packageName),
-                    handler,
-                )
-            }
-            override fun unregister(controller: IKarooSystem?) {
-                controller?.removeEventConsumer(consumerId)
-            }
-        })
-    }
-
-    /**
-     * Register a raw consumer for Bikes to log the full JSON payload
-     * and discover any hidden fields the SDK drops.
-     */
-    private fun registerRawBikesConsumer() {
-        val consumerId = UUID.randomUUID().toString()
-        karooSystem.addConsumer(object : KarooSystemListener(consumerId) {
-            override fun register(controller: IKarooSystem?) {
-                val handler = object : IHandler.Stub() {
-                    override fun onNext(bundle: Bundle) {
-                        val rawJson = bundle.getString("value")
-                        Timber.i("========== RAW JSON [Bikes] ==========")
-                        Timber.i("$rawJson")
-                        Timber.i("=======================================")
-                    }
-                    override fun onError(msg: String?) {
-                        Timber.w("Bikes raw consumer error: $msg")
-                    }
-                    override fun onComplete() {
-                        Timber.i("Bikes raw consumer complete")
-                    }
-                }
-                controller?.addEventConsumer(
-                    consumerId,
-                    Bikes.Params.bundleWithSerializable(karooSystem.packageName),
-                    handler,
-                )
-            }
-            override fun unregister(controller: IKarooSystem?) {
-                controller?.removeEventConsumer(consumerId)
-            }
-        })
     }
 
     override fun onDestroy() {
