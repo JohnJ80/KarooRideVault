@@ -63,6 +63,20 @@ class StravaApi(private val tokenStore: StravaTokenStore) {
     )
 
     @Serializable
+    data class ActivitySummary(
+        val id: Long,
+        @SerialName("gear_id") val gearId: String? = null,
+    )
+
+    @Serializable
+    data class GearDetail(
+        val id: String,
+        val name: String,
+        val distance: Double = 0.0,
+        @SerialName("resource_state") val resourceState: Int = 0,
+    )
+
+    @Serializable
     data class UploadResponse(
         val id: Long,
         @SerialName("id_str") val idStr: String = "",
@@ -169,6 +183,41 @@ class StravaApi(private val tokenStore: StravaTokenStore) {
         return executeRequest(request) { responseBody ->
             Timber.d("GET /athlete response: $responseBody")
             json.decodeFromString<Athlete>(responseBody)
+        }
+    }
+
+    /**
+     * Fetch recent activities to discover gear_ids.
+     * Fallback when GET /athlete returns SummaryAthlete (no bikes).
+     * Works with activity:read_all scope — no profile:read_all needed.
+     */
+    fun getAthleteActivities(accessToken: String, perPage: Int = 30): Result<List<ActivitySummary>> {
+        val request = Request.Builder()
+            .url("$BASE_URL/athlete/activities?per_page=$perPage")
+            .header("Authorization", "Bearer $accessToken")
+            .get()
+            .build()
+
+        return executeRequest(request) { responseBody ->
+            Timber.d("GET /athlete/activities response (first 500 chars): ${responseBody.take(500)}")
+            json.decodeFromString<List<ActivitySummary>>(responseBody)
+        }
+    }
+
+    /**
+     * Fetch gear details by ID.
+     * Works with basic read scope — no profile:read_all needed.
+     */
+    fun getGear(accessToken: String, gearId: String): Result<GearDetail> {
+        val request = Request.Builder()
+            .url("$BASE_URL/gear/$gearId")
+            .header("Authorization", "Bearer $accessToken")
+            .get()
+            .build()
+
+        return executeRequest(request) { responseBody ->
+            Timber.d("GET /gear/$gearId response: $responseBody")
+            json.decodeFromString<GearDetail>(responseBody)
         }
     }
 

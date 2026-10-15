@@ -183,6 +183,37 @@ fun UploadConfirmationScreen(
 
     var waitingForWifi by remember { mutableStateOf(false) }
     var needsReauth by remember { mutableStateOf(false) }
+    var hasTriedReauth by remember { mutableStateOf(false) }
+
+    // Discover bikes from recent activities when GET /athlete returns summary (no bikes).
+    // Works with activity:read_all + read scopes — no profile:read_all needed.
+    suspend fun discoverBikesFromActivities(accessToken: String): List<StravaApi.Bike> {
+        Timber.i("Fallback: discovering bikes from recent activities...")
+        val activitiesResult = api.getAthleteActivities(accessToken)
+        val activities = activitiesResult.getOrNull()
+        if (activities == null) {
+            Timber.w("Fallback: failed to fetch activities")
+            return emptyList()
+        }
+
+        val uniqueGearIds = activities.mapNotNull { it.gearId }.distinct()
+        Timber.i("Fallback: found ${uniqueGearIds.size} unique gear_ids from ${activities.size} activities")
+        if (uniqueGearIds.isEmpty()) return emptyList()
+
+        return uniqueGearIds.mapNotNull { gearId ->
+            val gearResult = api.getGear(accessToken, gearId)
+            gearResult.fold(
+                onSuccess = { gear ->
+                    Timber.i("Fallback: resolved gear $gearId → ${gear.name}")
+                    StravaApi.Bike(id = gear.id, name = gear.name, distance = gear.distance)
+                },
+                onFailure = { e ->
+                    Timber.w("Fallback: GET /gear/$gearId failed (${e.message}), using ID as name")
+                    StravaApi.Bike(id = gearId, name = gearId)
+                },
+            )
+        }
+    }
 
     // Reusable bike-loading function — retries automatically while waiting for WiFi
     suspend fun loadBikes() {
@@ -207,17 +238,35 @@ fun UploadConfirmationScreen(
             for (attempt in 1..maxAttempts) {
                 val result = api.getAthlete(accessToken)
                 result.onSuccess { athlete ->
-                    bikes = athlete.bikes
                     Timber.i("GET /athlete succeeded — ${athlete.bikes.size} bikes, resource_state=${athlete.resourceState}, athlete=${athlete.firstName} ${athlete.lastName}")
-                    if (athlete.bikes.isEmpty() && athlete.resourceState <= 2) {
-                        // resource_state 2 = summary representation — token lacks profile:read_all scope
-                        Timber.w("No bikes — resource_state=${athlete.resourceState}, token missing profile:read_all scope")
-                        needsReauth = true
-                        bikeLoadError = "Reconnect Strava to enable bike selection"
+
+                    if (athlete.bikes.isNotEmpty()) {
+                        // Got bikes directly from detailed athlete — best case
+                        bikes = athlete.bikes
+                    } else if (athlete.resourceState <= 2) {
+                        // Summary representation — token lacks profile:read_all scope
+                        // Try fallback: discover bikes from recent activities
+                        Timber.w("No bikes — resource_state=${athlete.resourceState}, trying activities fallback")
+                        val fallbackBikes = discoverBikesFromActivities(accessToken)
+                        if (fallbackBikes.isNotEmpty()) {
+                            Timber.i("Fallback succeeded — found ${fallbackBikes.size} bikes")
+                            bikes = fallbackBikes
+                        } else {
+                            Timber.w("Fallback found no bikes either")
+                            bikes = emptyList()
+                            if (hasTriedReauth) {
+                                // Already reconnected once and still no luck — don't loop
+                                bikeLoadError = "No bikes found — upload will use Strava default"
+                            } else {
+                                needsReauth = true
+                                bikeLoadError = "Reconnect Strava to enable bike selection"
+                            }
+                        }
                     }
-                    if (selectedGearId == null && athlete.bikes.isNotEmpty()) {
-                        selectedGearId = athlete.bikes.first().id
-                        selectedBikeName = athlete.bikes.first().name
+
+                    if (selectedGearId == null && bikes.isNotEmpty()) {
+                        selectedGearId = bikes.first().id
+                        selectedBikeName = bikes.first().name
                     }
                     waitingForWifi = false
                     loadingBikes = false
@@ -260,6 +309,7 @@ fun UploadConfirmationScreen(
             onConnected = {
                 showAuthScreen = false
                 uploadError = null
+                hasTriedReauth = true
                 scope.launch { loadBikes() }
             },
             onCancel = { showAuthScreen = false },
@@ -335,7 +385,8 @@ fun UploadConfirmationScreen(
                             MaterialTheme.colorScheme.onSurfaceVariant
                         },
                     )
-                    if (needsReauth) {
+                    if (needsReauth && !hasTriedReauth) {
+                        // First time seeing scope issue — offer reconnect
                         Spacer(modifier = Modifier.height(8.dp))
                         OutlinedButton(
                             onClick = {
@@ -346,6 +397,7 @@ fun UploadConfirmationScreen(
                             Text("Reconnect Strava", style = MaterialTheme.typography.bodySmall)
                         }
                     } else if (bikeLoadError != null) {
+                        // Network error, or already tried reconnect — offer retry
                         Spacer(modifier = Modifier.height(8.dp))
                         OutlinedButton(
                             onClick = {
