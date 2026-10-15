@@ -58,7 +58,7 @@ function handleAuth(url, env) {
   stravaUrl.searchParams.set('redirect_uri', `${url.origin}/callback`);
   stravaUrl.searchParams.set('response_type', 'code');
   stravaUrl.searchParams.set('approval_prompt', 'auto');
-  stravaUrl.searchParams.set('scope', 'read,activity:write,activity:read_all');
+  stravaUrl.searchParams.set('scope', 'read,profile:read_all,activity:write,activity:read_all');
   return Response.redirect(stravaUrl.toString(), 302);
 }
 
