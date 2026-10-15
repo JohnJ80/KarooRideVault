@@ -174,19 +174,35 @@ fun UploadConfirmationScreen(
     var selectedBikeName by remember { mutableStateOf(initialBikeName) }
     var bikes by remember { mutableStateOf<List<StravaApi.Bike>>(emptyList()) }
     var loadingBikes by remember { mutableStateOf(true) }
+    var bikeLoadError by remember { mutableStateOf<String?>(null) }
     var uploading by remember { mutableStateOf(false) }
     var uploadDone by remember { mutableStateOf(false) }
     var uploadError by remember { mutableStateOf<String?>(null) }
     var showAuthScreen by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    // Fetch the user's Strava bikes on first load (refreshes token if expired)
-    LaunchedEffect(Unit) {
+    var waitingForWifi by remember { mutableStateOf(false) }
+
+    // Reusable bike-loading function — retries automatically while waiting for WiFi
+    suspend fun loadBikes() {
+        loadingBikes = true
+        bikeLoadError = null
+        waitingForWifi = false
         withContext(Dispatchers.IO) {
             Timber.i("Loading bikes — getting access token...")
             val accessToken = tokenStore.getValidAccessToken(api)
-            if (accessToken != null) {
-                Timber.i("Got access token (${accessToken.take(8)}...), calling GET /athlete")
+            if (accessToken == null) {
+                Timber.e("No valid access token available — cannot load bikes")
+                bikeLoadError = "Not connected to Strava"
+                loadingBikes = false
+                return@withContext
+            }
+
+            Timber.i("Got access token (${accessToken.take(8)}...), calling GET /athlete")
+            val maxAttempts = 4 // ~10 seconds total with 3s intervals
+            var lastError: Throwable? = null
+
+            for (attempt in 1..maxAttempts) {
                 val result = api.getAthlete(accessToken)
                 result.onSuccess { athlete ->
                     bikes = athlete.bikes
@@ -194,20 +210,41 @@ fun UploadConfirmationScreen(
                     if (athlete.bikes.isEmpty()) {
                         Timber.w("No bikes in response — token may be missing profile:read_all scope")
                     }
-                    // If no bike was pre-selected but bikes are available, default to first
                     if (selectedGearId == null && athlete.bikes.isNotEmpty()) {
                         selectedGearId = athlete.bikes.first().id
                         selectedBikeName = athlete.bikes.first().name
                     }
+                    bikeLoadError = null
+                    waitingForWifi = false
+                    loadingBikes = false
+                    return@withContext
                 }
                 result.onFailure { e ->
-                    Timber.e(e, "GET /athlete FAILED")
+                    lastError = e
+                    val isNetworkError = e is java.net.UnknownHostException ||
+                        e is java.net.ConnectException ||
+                        e.message?.contains("resolve host", ignoreCase = true) == true
+                    if (isNetworkError && attempt < maxAttempts) {
+                        waitingForWifi = true
+                        Timber.i("No network (attempt $attempt/$maxAttempts) — waiting for WiFi...")
+                        kotlinx.coroutines.delay(3000L)
+                    } else {
+                        Timber.w("GET /athlete attempt $attempt failed: ${e.message}")
+                    }
                 }
-            } else {
-                Timber.e("No valid access token available — cannot load bikes")
             }
+
+            // All retries exhausted
+            Timber.e(lastError, "GET /athlete FAILED after $maxAttempts attempts")
+            waitingForWifi = false
+            bikeLoadError = "No network — connect to WiFi and tap Retry"
             loadingBikes = false
         }
+    }
+
+    // Fetch the user's Strava bikes on first load (auto-retries while WiFi reconnects)
+    LaunchedEffect(Unit) {
+        loadBikes()
     }
 
     // Auth screen overlay
@@ -289,16 +326,30 @@ fun UploadConfirmationScreen(
                             strokeWidth = 2.dp,
                         )
                         Text(
-                            text = "Loading bikes…",
+                            text = if (waitingForWifi) "Waiting for WiFi…" else "Loading bikes…",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
                 } else if (bikes.isEmpty()) {
                     Text(
-                        text = "No bikes found on Strava",
+                        text = bikeLoadError ?: "No bikes found on Strava",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (bikeLoadError != null) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
                     )
+                    if (bikeLoadError != null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                scope.launch { loadBikes() }
+                            },
+                        ) {
+                            Text("Retry", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 } else {
                     // Bike list — tap to select
                     bikes.forEach { bike ->
