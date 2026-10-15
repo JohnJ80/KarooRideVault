@@ -13,13 +13,13 @@ import com.ridevault.karoo.upload.PendingUploadStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import timber.log.Timber
 
@@ -43,7 +43,9 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
     private lateinit var fitFinder: FitFileFinder
     private lateinit var pendingStore: PendingUploadStore
 
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var rideMonitorJob: Job? = null
+    private var sessionActive = false
 
     override fun onCreate() {
         super.onCreate()
@@ -54,9 +56,8 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
         pendingStore = PendingUploadStore(this)
 
         karooSystem.connect { connected ->
+            Timber.i("RideVault Karoo connected: $connected")
             if (connected) {
-                Timber.i("RideVault connected to Karoo system")
-
                 if (tokenStore.hasToken()) {
                     val pendingCount = pendingStore.pendingCount()
                     val subText = if (pendingCount > 0) {
@@ -76,7 +77,7 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
         }
 
         // Monitor ride state transitions
-        rideMonitorJob = CoroutineScope(Dispatchers.IO).launch {
+        rideMonitorJob = scope.launch {
             monitorRideState()
         }
     }
@@ -98,29 +99,36 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
     /**
      * Watch ride state. When a ride ends (Recording/Paused -> Idle),
      * find the FIT file and launch the upload confirmation screen.
+     *
+     * Uses plain .collect (not .collectLatest) to match the working
+     * karoo-ride-namer reference — collectLatest cancels the previous
+     * collector on each new emission, which can swallow the Idle state.
      */
     private suspend fun monitorRideState() {
-        var wasRiding = false
-        karooSystem.streamRideState()
-            .distinctUntilChanged()
-            .collectLatest { state ->
-                when (state) {
-                    is RideState.Recording -> {
-                        wasRiding = true
-                        val bike = mapper.getDefaultBike()
-                        Timber.i("Ride started/resumed — configured bike: ${bike?.bikeName ?: "none"}")
+        karooSystem.streamRideState().collect { state ->
+            Timber.i("RideVault ride state: $state (sessionActive=$sessionActive)")
+            when (state) {
+                is RideState.Recording -> {
+                    if (!sessionActive) {
+                        sessionActive = true
+                        Timber.i("Ride started — session active")
                     }
-                    is RideState.Paused -> {
-                        wasRiding = true
+                }
+                is RideState.Paused -> {
+                    if (!sessionActive) {
+                        sessionActive = true
+                        Timber.i("Ride paused (was not active) — marking active")
                     }
-                    is RideState.Idle -> {
-                        if (wasRiding) {
-                            wasRiding = false
-                            onRideEnded()
-                        }
+                }
+                is RideState.Idle -> {
+                    if (sessionActive) {
+                        sessionActive = false
+                        Timber.i("Ride ended — transitioning to onRideEnded()")
+                        onRideEnded()
                     }
                 }
             }
+        }
     }
 
     /**
@@ -129,6 +137,7 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
      * upload confirmation UI.
      */
     private fun onRideEnded() {
+        Timber.i("onRideEnded() called — checking Strava token")
         if (!tokenStore.hasToken()) {
             Timber.w("Strava not connected — prompting setup")
             karooSystem.dispatch(
@@ -143,9 +152,11 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
             return
         }
 
-        CoroutineScope(Dispatchers.IO).launch {
+        Timber.i("Strava token present — waiting for FIT file to settle")
+        scope.launch {
             // Wait for the Karoo to finish writing the FIT file
             delay(FitFileFinder.SETTLE_DELAY_MS)
+            Timber.i("FIT settle delay complete — searching for FIT file")
 
             val fitFile = fitFinder.findLatestFitFile()
             if (fitFile == null) {
@@ -159,6 +170,7 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
                 )
                 return@launch
             }
+            Timber.i("Found FIT file: ${fitFile.name} (${fitFile.length()} bytes)")
 
             if (fitFinder.isAlreadyUploaded(fitFile)) {
                 Timber.i("FIT file ${fitFile.name} already uploaded — skipping")
@@ -167,7 +179,7 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
 
             // Launch the upload confirmation screen
             val bikeMatch = mapper.getDefaultBike()
-            Timber.i("Launching upload confirmation — file: ${fitFile.name}, bike: ${bikeMatch?.bikeName}")
+            Timber.i("Launching upload confirmation — file: ${fitFile.name}, bike: ${bikeMatch?.bikeName ?: "none"}")
 
             val intent = Intent(applicationContext, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -179,7 +191,7 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
             }
             try {
                 applicationContext.startActivity(intent)
-                Timber.i("Upload confirmation activity launched")
+                Timber.i("Upload confirmation activity launched successfully")
             } catch (e: Exception) {
                 Timber.e(e, "Failed to launch upload confirmation activity")
             }
@@ -189,6 +201,7 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
     override fun onDestroy() {
         rideMonitorJob?.cancel()
         rideMonitorJob = null
+        scope.cancel()
         karooSystem.disconnect()
         super.onDestroy()
     }
