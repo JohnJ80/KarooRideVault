@@ -22,7 +22,7 @@ class StravaUploader(private val context: Context) {
     sealed class UploadResult {
         data class Success(val activityId: Long, val bikeName: String) : UploadResult()
         data class Processing(val uploadId: Long) : UploadResult()
-        data class Error(val message: String) : UploadResult()
+        data class Error(val message: String, val isAuthFailure: Boolean = false) : UploadResult()
     }
 
     /**
@@ -37,7 +37,7 @@ class StravaUploader(private val context: Context) {
     ): UploadResult {
         // Ensure we have a valid token
         val accessToken = getValidAccessToken()
-            ?: return UploadResult.Error("Not connected to Strava")
+            ?: return UploadResult.Error("Not connected to Strava", isAuthFailure = true)
 
         Timber.i("Uploading ${fitFile.name} with gear_id=$gearId ($bikeName)")
 
@@ -60,7 +60,9 @@ class StravaUploader(private val context: Context) {
             },
             onFailure = { e ->
                 Timber.e(e, "Upload failed")
-                UploadResult.Error(e.message ?: "Upload failed")
+                val isAuth = e.message?.contains("401") == true ||
+                    e.message?.contains("Authorization") == true
+                UploadResult.Error(e.message ?: "Upload failed", isAuthFailure = isAuth)
             },
         )
     }

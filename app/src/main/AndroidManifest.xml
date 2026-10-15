@@ -25,22 +25,6 @@
             </intent-filter>
         </activity>
 
-        <!-- Strava OAuth callback -->
-        <activity
-            android:name=".strava.StravaAuthActivity"
-            android:exported="true"
-            android:launchMode="singleTop">
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:scheme="http"
-                    android:host="localhost"
-                    android:path="/ridevault-karoo" />
-            </intent-filter>
-        </activity>
-
         <!-- Karoo Extension Service -->
         <service
             android:name=".extension.RideVaultExtension"
