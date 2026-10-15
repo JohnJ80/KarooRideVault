@@ -150,7 +150,7 @@ fun StravaAuthScreen(
             ),
             singleLine = true,
             modifier = Modifier.fillMaxWidth(0.6f),
-            textStyle = MaterialTheme.typography.titleLarge.copy(
+            textStyle = MaterialTheme.typography.titleMedium.copy(
                 textAlign = TextAlign.Center,
                 letterSpacing = androidx.compose.ui.unit.TextUnit(4f, androidx.compose.ui.unit.TextUnitType.Sp),
             ),
