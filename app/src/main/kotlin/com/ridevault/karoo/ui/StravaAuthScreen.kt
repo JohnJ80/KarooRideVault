@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -25,11 +26,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ridevault.karoo.strava.StravaApi
 import com.ridevault.karoo.strava.StravaTokenStore
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -41,6 +44,8 @@ import timber.log.Timber
  * 1. Shows a QR code that links to the auth relay
  * 2. User scans with phone → logs into Strava → gets a 6-digit PIN
  * 3. User types the PIN here → app fetches the token from the relay
+ *
+ * Auto-submits when the 6th digit is entered, or on keyboard Done.
  */
 @Composable
 fun StravaAuthScreen(
@@ -54,6 +59,39 @@ fun StravaAuthScreen(
     var status by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
+    // Extract submit logic so it can be called from button, keyboard, or auto-submit
+    fun submitPin() {
+        if (pin.length != 6 || isLoading) return
+        isLoading = true
+        status = null
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                api.fetchTokenFromRelay(relayUrl, pin)
+            }
+            result.onSuccess { tokenResponse ->
+                tokenStore.saveToken(
+                    StravaTokenStore.TokenData(
+                        accessToken = tokenResponse.accessToken,
+                        refreshToken = tokenResponse.refreshToken,
+                        expiresAt = tokenResponse.expiresAt,
+                        athleteId = tokenResponse.athlete?.id ?: 0,
+                        athleteFirstName = tokenResponse.athlete?.firstName ?: "",
+                    ),
+                )
+                Timber.i("Strava auth via relay complete")
+                onConnected()
+            }
+            result.onFailure { e ->
+                status = when {
+                    e.message?.contains("404") == true -> "Invalid or expired PIN. Try again."
+                    else -> "Error: ${e.message}"
+                }
+                Timber.e(e, "Relay token fetch failed")
+            }
+            isLoading = false
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -90,16 +128,26 @@ fun StravaAuthScreen(
             textAlign = TextAlign.Center,
         )
 
-        // PIN input
+        // PIN input — auto-submits on 6th digit or keyboard Done
         OutlinedTextField(
             value = pin,
             onValueChange = { newValue ->
                 if (newValue.length <= 6 && newValue.all { it.isDigit() }) {
                     pin = newValue
+                    // Auto-submit when 6th digit entered
+                    if (newValue.length == 6) {
+                        submitPin()
+                    }
                 }
             },
             label = { Text("6-digit PIN") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Number,
+                imeAction = ImeAction.Done,
+            ),
+            keyboardActions = KeyboardActions(
+                onDone = { submitPin() },
+            ),
             singleLine = true,
             modifier = Modifier.fillMaxWidth(0.6f),
             textStyle = MaterialTheme.typography.headlineMedium.copy(
@@ -125,36 +173,7 @@ fun StravaAuthScreen(
                 Text("Cancel")
             }
             Button(
-                onClick = {
-                    isLoading = true
-                    status = null
-                    scope.launch {
-                        val result = withContext(Dispatchers.IO) {
-                            api.fetchTokenFromRelay(relayUrl, pin)
-                        }
-                        result.onSuccess { tokenResponse ->
-                            tokenStore.saveToken(
-                                StravaTokenStore.TokenData(
-                                    accessToken = tokenResponse.accessToken,
-                                    refreshToken = tokenResponse.refreshToken,
-                                    expiresAt = tokenResponse.expiresAt,
-                                    athleteId = tokenResponse.athlete?.id ?: 0,
-                                    athleteFirstName = tokenResponse.athlete?.firstName ?: "",
-                                ),
-                            )
-                            Timber.i("Strava auth via relay complete")
-                            onConnected()
-                        }
-                        result.onFailure { e ->
-                            status = when {
-                                e.message?.contains("404") == true -> "Invalid or expired PIN. Try again."
-                                else -> "Error: ${e.message}"
-                            }
-                            Timber.e(e, "Relay token fetch failed")
-                        }
-                        isLoading = false
-                    }
-                },
+                onClick = { submitPin() },
                 enabled = pin.length == 6 && !isLoading,
             ) {
                 if (isLoading) {
