@@ -108,6 +108,7 @@ class MainActivity : ComponentActivity() {
         val fitFilePath = intent.getStringExtra("fit_file_path")
         val fitFileName = intent.getStringExtra("fit_file_name")
         val rideProfileName = intent.getStringExtra("ride_profile_name")
+        val inferredBikeName = intent.getStringExtra("inferred_bike_name")
 
         setContent {
             MaterialTheme {
@@ -118,6 +119,7 @@ class MainActivity : ComponentActivity() {
                             fitFilePath = fitFilePath,
                             fitFileName = fitFileName,
                             rideProfileName = rideProfileName,
+                            inferredBikeName = inferredBikeName,
                             tokenStore = tokenStore,
                             api = api,
                             karooSystem = karooSystem,
@@ -172,6 +174,7 @@ fun UploadConfirmationScreen(
     fitFilePath: String,
     fitFileName: String,
     rideProfileName: String?,
+    inferredBikeName: String? = null,
     tokenStore: StravaTokenStore,
     api: StravaApi,
     karooSystem: KarooSystemService,
@@ -328,17 +331,28 @@ fun UploadConfirmationScreen(
                         Timber.i("No Karoo bike profiles — showing all ${stravaBikes.size} Strava bikes")
                     }
 
-                    // Auto-select bike: match ride profile name → bike name, or single bike
+                    // Auto-select bike using (in priority order):
+                    // 1. Inferred bike name from odometer change during the ride
+                    // 2. Ride profile name match (fallback)
+                    // 3. Single bike auto-select
                     if (selectedGearId == null && bikes.isNotEmpty()) {
-                        val autoSelect = if (rideProfileName != null) {
-                            // Try exact name match first (ride profile name = bike name)
-                            bikes.find { it.name.equals(rideProfileName, ignoreCase = true) }
-                                // Then try contains match (e.g. profile "Domane" matches bike "Trek Domane+")
-                                ?: bikes.find {
-                                    it.name.contains(rideProfileName, ignoreCase = true) ||
-                                        rideProfileName.contains(it.name, ignoreCase = true)
-                                }
-                        } else null
+                        val autoSelect =
+                            // Priority 1: inferred bike name from odometer tracking
+                            if (inferredBikeName != null) {
+                                bikes.find { it.name.equals(inferredBikeName, ignoreCase = true) }
+                                    ?: bikes.find {
+                                        it.name.contains(inferredBikeName, ignoreCase = true) ||
+                                            inferredBikeName.contains(it.name, ignoreCase = true)
+                                    }
+                            } else null
+                            // Priority 2: ride profile name match
+                            ?: if (rideProfileName != null) {
+                                bikes.find { it.name.equals(rideProfileName, ignoreCase = true) }
+                                    ?: bikes.find {
+                                        it.name.contains(rideProfileName, ignoreCase = true) ||
+                                            rideProfileName.contains(it.name, ignoreCase = true)
+                                    }
+                            } else null
 
                         val selected = autoSelect
                             ?: if (bikes.size == 1) bikes.first() else null
@@ -346,9 +360,9 @@ fun UploadConfirmationScreen(
                         if (selected != null) {
                             selectedGearId = selected.id
                             selectedBikeName = selected.name
-                            Timber.i("Auto-selected bike: ${selected.name} (profile=$rideProfileName)")
+                            Timber.i("Auto-selected bike: ${selected.name} (${selected.id}) inferred=$inferredBikeName, profile=$rideProfileName")
                         } else {
-                            Timber.i("Multiple bikes, no profile match — user must pick (profile=$rideProfileName, bikes=${bikes.map { it.name }})")
+                            Timber.i("Multiple bikes, no match — user must pick (inferred=$inferredBikeName, profile=$rideProfileName, bikes=${bikes.map { it.name }})")
                         }
                     }
                     waitingForWifi = false

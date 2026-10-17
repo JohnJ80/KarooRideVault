@@ -5,6 +5,7 @@ import com.ridevault.karoo.ui.MainActivity
 import io.hammerhead.karooext.KarooSystemService
 import io.hammerhead.karooext.extension.KarooExtension
 import io.hammerhead.karooext.models.ActiveRideProfile
+import io.hammerhead.karooext.models.Bikes
 import io.hammerhead.karooext.models.RideState
 import io.hammerhead.karooext.models.SystemNotification
 import com.ridevault.karoo.mapping.SensorBikeMapper
@@ -49,6 +50,12 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
     private var sessionActive = false
     private var activeRideProfileName: String? = null
 
+    // Bike odometer tracking — snapshot at ride start, compare at ride end
+    // to infer which bike was ridden (the one whose odometer increased)
+    private var currentBikes: List<Bikes.Bike> = emptyList()
+    private var preRideOdometers: Map<String, Double> = emptyMap() // bike id → odometer
+    private var inferredBikeName: String? = null
+
     override fun onCreate() {
         super.onCreate()
         karooSystem = KarooSystemService(applicationContext)
@@ -65,6 +72,14 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
                 karooSystem.addConsumer { profile: ActiveRideProfile ->
                     activeRideProfileName = profile.profile.name
                     Timber.i("Active ride profile: ${profile.profile.name} (type=${profile.profile.defaultActivityType})")
+                }
+
+                // Track all bike profiles — we use odometer changes to
+                // infer which bike was ridden (the SDK doesn't expose
+                // which bike is assigned to a ride profile)
+                karooSystem.addConsumer { event: Bikes ->
+                    currentBikes = event.bikes
+                    Timber.i("Karoo bikes updated: ${event.bikes.map { "${it.name}(${it.odometer}m)" }}")
                 }
 
                 if (tokenStore.hasToken()) {
@@ -120,22 +135,65 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
                 is RideState.Recording -> {
                     if (!sessionActive) {
                         sessionActive = true
-                        Timber.i("Ride started — session active")
+                        inferredBikeName = null
+                        // Snapshot odometers at ride start so we can detect
+                        // which bike's odometer increased when the ride ends
+                        preRideOdometers = currentBikes.associate { it.id to it.odometer }
+                        Timber.i("Ride started — snapshot odometers: ${currentBikes.map { "${it.name}=${it.odometer}m" }}")
                     }
                 }
                 is RideState.Paused -> {
                     if (!sessionActive) {
                         sessionActive = true
-                        Timber.i("Ride paused (was not active) — marking active")
+                        inferredBikeName = null
+                        preRideOdometers = currentBikes.associate { it.id to it.odometer }
+                        Timber.i("Ride paused (was not active) — snapshot odometers")
                     }
                 }
                 is RideState.Idle -> {
                     if (sessionActive) {
                         sessionActive = false
-                        Timber.i("Ride ended — transitioning to onRideEnded()")
+                        // Infer which bike was ridden by comparing odometers
+                        inferredBikeName = inferBikeFromOdometer()
+                        Timber.i("Ride ended — inferred bike: ${inferredBikeName ?: "unknown"}")
                         onRideEnded()
                     }
                 }
+            }
+        }
+    }
+
+    /**
+     * Compare current bike odometers against the pre-ride snapshot.
+     * The bike whose odometer increased is the one that was just ridden.
+     */
+    private fun inferBikeFromOdometer(): String? {
+        if (preRideOdometers.isEmpty() || currentBikes.isEmpty()) {
+            Timber.w("Cannot infer bike — no odometer data (pre=${preRideOdometers.size}, current=${currentBikes.size})")
+            return null
+        }
+
+        val changed = currentBikes.filter { bike ->
+            val before = preRideOdometers[bike.id] ?: return@filter false
+            bike.odometer > before
+        }
+
+        return when {
+            changed.size == 1 -> {
+                val bike = changed.first()
+                val delta = bike.odometer - (preRideOdometers[bike.id] ?: 0.0)
+                Timber.i("Inferred bike '${bike.name}' — odometer increased by ${delta}m")
+                bike.name
+            }
+            changed.isEmpty() -> {
+                Timber.w("No bike odometer changed — cannot infer bike")
+                null
+            }
+            else -> {
+                // Multiple odometers changed — pick the one with the largest increase
+                val best = changed.maxByOrNull { it.odometer - (preRideOdometers[it.id] ?: 0.0) }
+                Timber.w("Multiple odometers changed (${changed.map { it.name }}), picking '${best?.name}'")
+                best?.name
             }
         }
     }
@@ -195,6 +253,7 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
                 putExtra("fit_file_path", fitFile.absolutePath)
                 putExtra("fit_file_name", fitFile.name)
                 putExtra("ride_profile_name", activeRideProfileName)
+                putExtra("inferred_bike_name", inferredBikeName)
             }
             try {
                 applicationContext.startActivity(intent)
