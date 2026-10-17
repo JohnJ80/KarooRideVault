@@ -5,59 +5,57 @@ import android.content.SharedPreferences
 import timber.log.Timber
 
 /**
- * Learns and persists ride profile → Karoo bike name mappings.
+ * Persists ride profile → Strava gear_id mappings.
  *
- * The Karoo SDK doesn't expose which bike is assigned to a ride profile,
- * so we learn it: when odometer inference detects which bike was ridden
- * on a given profile, we save that association. Future rides on the same
- * profile get instant bike selection without waiting for odometer changes.
+ * The first time a ride profile is used, the user picks which Strava bike
+ * to tag on the upload confirmation screen. That choice is saved here so
+ * future rides on the same profile auto-select the correct bike.
  *
- * Storage: SharedPreferences under "ridevault_profile_bikes"
+ * Storage: SharedPreferences under "ridevault_profile_gear"
  *   Key:   ride profile name (e.g. "Road Domane")
- *   Value: Karoo bike name  (e.g. "Trek Domane+")
+ *   Value: Strava gear_id     (e.g. "b2390326")
  */
 class ProfileBikeMapper(context: Context) {
 
     companion object {
-        private const val PREFS_NAME = "ridevault_profile_bikes"
+        private const val PREFS_NAME = "ridevault_profile_gear"
     }
 
     private val prefs: SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     /**
-     * Look up the learned bike for a ride profile.
-     * Returns null if we haven't learned this profile's bike yet.
+     * Look up the saved Strava gear_id for a ride profile.
+     * Returns null if this profile hasn't been mapped yet.
      */
-    fun getBikeForProfile(profileName: String): String? {
-        val bikeName = prefs.getString(profileName, null)
-        if (bikeName != null) {
-            Timber.i("ProfileBikeMapper: '$profileName' → '$bikeName' (learned)")
+    fun getGearIdForProfile(profileName: String): String? {
+        val gearId = prefs.getString(profileName, null)
+        if (gearId != null) {
+            Timber.i("ProfileBikeMapper: '$profileName' → gear_id '$gearId'")
         }
-        return bikeName
+        return gearId
     }
 
     /**
-     * Save or update a profile → bike mapping.
-     * Called when odometer inference successfully identifies the bike
-     * ridden on a given profile.
+     * Save or update a profile → gear_id mapping.
+     * Called after the user selects a bike on the upload confirmation screen.
      */
-    fun learnProfileBike(profileName: String, bikeName: String) {
+    fun saveProfileGearId(profileName: String, gearId: String) {
         val existing = prefs.getString(profileName, null)
-        if (existing == bikeName) {
-            Timber.d("ProfileBikeMapper: '$profileName' → '$bikeName' (already known)")
+        if (existing == gearId) {
+            Timber.d("ProfileBikeMapper: '$profileName' → '$gearId' (already saved)")
             return
         }
-        prefs.edit().putString(profileName, bikeName).apply()
+        prefs.edit().putString(profileName, gearId).apply()
         if (existing != null) {
-            Timber.i("ProfileBikeMapper: '$profileName' updated '$existing' → '$bikeName'")
+            Timber.i("ProfileBikeMapper: '$profileName' updated '$existing' → '$gearId'")
         } else {
-            Timber.i("ProfileBikeMapper: '$profileName' → '$bikeName' (new mapping)")
+            Timber.i("ProfileBikeMapper: '$profileName' → '$gearId' (new mapping)")
         }
     }
 
     /**
-     * Remove a learned mapping (e.g. if the user reassigns bikes).
+     * Remove a saved mapping (e.g. if the user reassigns bikes).
      */
     fun forgetProfile(profileName: String) {
         prefs.edit().remove(profileName).apply()
@@ -65,7 +63,8 @@ class ProfileBikeMapper(context: Context) {
     }
 
     /**
-     * Get all learned mappings — useful for a settings/debug screen.
+     * Get all saved mappings — useful for a settings/setup screen.
+     * Returns Map<profileName, gearId>.
      */
     fun getAllMappings(): Map<String, String> {
         @Suppress("UNCHECKED_CAST")
@@ -73,7 +72,7 @@ class ProfileBikeMapper(context: Context) {
     }
 
     /**
-     * Clear all learned mappings.
+     * Clear all saved mappings.
      */
     fun clearAll() {
         prefs.edit().clear().apply()

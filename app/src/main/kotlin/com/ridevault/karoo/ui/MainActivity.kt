@@ -46,6 +46,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ridevault.karoo.BuildConfig
+import com.ridevault.karoo.mapping.ProfileBikeMapper
 import com.ridevault.karoo.mapping.SensorBikeMapper
 import com.ridevault.karoo.strava.StravaApi
 import com.ridevault.karoo.strava.StravaTokenStore
@@ -108,9 +109,6 @@ class MainActivity : ComponentActivity() {
         val fitFilePath = intent.getStringExtra("fit_file_path")
         val fitFileName = intent.getStringExtra("fit_file_name")
         val rideProfileName = intent.getStringExtra("ride_profile_name")
-        val profileBikeName = intent.getStringExtra("profile_bike_name")
-        val inferredBikeName = intent.getStringExtra("inferred_bike_name")
-        val learnedBikeName = intent.getStringExtra("learned_bike_name")
 
         setContent {
             MaterialTheme {
@@ -121,9 +119,7 @@ class MainActivity : ComponentActivity() {
                             fitFilePath = fitFilePath,
                             fitFileName = fitFileName,
                             rideProfileName = rideProfileName,
-                            profileBikeName = profileBikeName,
-                            inferredBikeName = inferredBikeName,
-                            learnedBikeName = learnedBikeName,
+                            profileBikeMapper = ProfileBikeMapper(activity),
                             tokenStore = tokenStore,
                             api = api,
                             karooSystem = karooSystem,
@@ -178,9 +174,7 @@ fun UploadConfirmationScreen(
     fitFilePath: String,
     fitFileName: String,
     rideProfileName: String?,
-    profileBikeName: String? = null,
-    inferredBikeName: String? = null,
-    learnedBikeName: String? = null,
+    profileBikeMapper: ProfileBikeMapper,
     tokenStore: StravaTokenStore,
     api: StravaApi,
     karooSystem: KarooSystemService,
@@ -342,53 +336,22 @@ fun UploadConfirmationScreen(
                     // 2. Ride profile name match (fallback)
                     // 3. Single bike auto-select
                     if (selectedGearId == null && bikes.isNotEmpty()) {
-                        // Auto-select priority:
-                        // 1. Learned bike name — from previous rides on this profile
-                        //    (persisted in SharedPreferences by ProfileBikeMapper)
-                        // 2. Profile bike name — the bike assigned to the ride profile
-                        //    (extracted from the raw JSON the SDK normally drops)
-                        // 3. Inferred bike name — from odometer change during the ride
-                        // 4. Ride profile name — fuzzy match against Strava bike names
-                        // 5. Single bike — if only one Strava bike, use it
-                        fun findBike(name: String): StravaApi.Bike? {
-                            // Exact match
-                            bikes.find { it.name.equals(name, ignoreCase = true) }
-                                ?.let { return it }
-                            // Substring match (one contains the other)
-                            bikes.find {
-                                it.name.contains(name, ignoreCase = true) ||
-                                    name.contains(it.name, ignoreCase = true)
-                            }?.let { return it }
-                            // Word match — find bikes sharing a significant word (4+ chars)
-                            // e.g. "Road Domane" matches "Trek Domane+" via "Domane"
-                            val queryWords = name.split(" ", "-", "_")
-                                .map { it.trim().lowercase() }
-                                .filter { it.length >= 4 }
-                            if (queryWords.isNotEmpty()) {
-                                bikes.find { bike ->
-                                    val bikeWords = bike.name.split(" ", "-", "_")
-                                        .map { it.trim().lowercase() }
-                                    queryWords.any { qw -> bikeWords.any { bw -> bw.startsWith(qw) || qw.startsWith(bw) } }
-                                }?.let { return it }
-                            }
-                            return null
+                        // Auto-select: look up saved gear_id for this profile
+                        val savedGearId = rideProfileName?.let {
+                            profileBikeMapper.getGearIdForProfile(it)
                         }
-
-                        val autoSelect =
-                            learnedBikeName?.let { findBike(it) }
-                                ?: profileBikeName?.let { findBike(it) }
-                                ?: inferredBikeName?.let { findBike(it) }
-                                ?: rideProfileName?.let { findBike(it) }
-
-                        val selected = autoSelect
+                        val saved = savedGearId?.let { gid ->
+                            bikes.find { it.id == gid }
+                        }
+                        val selected = saved
                             ?: if (bikes.size == 1) bikes.first() else null
 
                         if (selected != null) {
                             selectedGearId = selected.id
                             selectedBikeName = selected.name
-                            Timber.i("Auto-selected bike: ${selected.name} (${selected.id}) learned=$learnedBikeName, profileBike=$profileBikeName, inferred=$inferredBikeName, profile=$rideProfileName")
+                            Timber.i("Auto-selected bike: ${selected.name} (${selected.id}) profile=$rideProfileName savedGearId=$savedGearId")
                         } else {
-                            Timber.i("Multiple bikes, no match — user must pick (learned=$learnedBikeName, profileBike=$profileBikeName, inferred=$inferredBikeName, profile=$rideProfileName, bikes=${bikes.map { it.name }})")
+                            Timber.i("No saved mapping for profile '$rideProfileName' — user must pick (bikes=${bikes.map { it.name }})")
                         }
                     }
                     waitingForWifi = false
@@ -693,11 +656,18 @@ fun UploadConfirmationScreen(
                             is StravaUploader.UploadResult.Success -> {
                                 fitFinder.markUploaded(fitFile)
                                 uploadDone = true
+                                // Save this profile→bike mapping for future rides
+                                if (rideProfileName != null && selectedGearId != null) {
+                                    profileBikeMapper.saveProfileGearId(rideProfileName, selectedGearId!!)
+                                }
                                 Timber.i("Upload success — activity ${result.activityId}")
                             }
                             is StravaUploader.UploadResult.Processing -> {
                                 fitFinder.markUploaded(fitFile)
                                 uploadDone = true
+                                if (rideProfileName != null && selectedGearId != null) {
+                                    profileBikeMapper.saveProfileGearId(rideProfileName, selectedGearId!!)
+                                }
                                 Timber.i("Upload accepted — processing (id ${result.uploadId})")
                             }
                             is StravaUploader.UploadResult.Error -> {
