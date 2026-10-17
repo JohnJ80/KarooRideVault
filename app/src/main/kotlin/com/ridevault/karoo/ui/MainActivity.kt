@@ -1131,57 +1131,17 @@ fun DashboardScreen(
                 }
             }
 
-            // Profile → Strava Bike configuration — header
-            item {
-                Text(
-                    text = "Ride Profile → Strava Bike",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-            }
+            // Profile → Strava Bike mappings (only shown when mappings exist)
+            if (profileMappings.isNotEmpty() && !loadingBikes) {
+                item {
+                    Text(
+                        text = "Ride Profile → Strava Bike",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
 
-            // Status / loading row
-            if (loadingBikes) {
-                item {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                        Text(
-                            text = "Loading Strava bikes…",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            } else if (bikesError != null) {
-                item {
-                    Text(
-                        text = bikesError!!,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-            } else if (stravaBikes.isEmpty()) {
-                item {
-                    Text(
-                        text = "No Strava bikes found. Add bikes to your Strava profile first.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            } else if (profileMappings.isEmpty()) {
-                item {
-                    Text(
-                        text = "No ride profiles seen yet. Complete a ride and RideVault will remember your bike choice for that profile.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            } else {
-                // Each profile gets its own scrollable row
                 val sortedProfiles = profileMappings.keys.sorted()
                 items(sortedProfiles.size) { index ->
                     val profileName = sortedProfiles[index]
