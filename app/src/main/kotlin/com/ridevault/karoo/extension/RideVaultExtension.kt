@@ -1,17 +1,13 @@
 package com.ridevault.karoo.extension
 
 import android.content.Intent
-import android.os.Bundle
 import com.ridevault.karoo.ui.MainActivity
 import io.hammerhead.karooext.KarooSystemService
 import io.hammerhead.karooext.extension.KarooExtension
-import io.hammerhead.karooext.internal.KarooSystemListener
 import io.hammerhead.karooext.models.ActiveRideProfile
 import io.hammerhead.karooext.models.Bikes
 import io.hammerhead.karooext.models.RideState
 import io.hammerhead.karooext.models.SystemNotification
-import io.hammerhead.karooext.aidl.IHandler
-import io.hammerhead.karooext.aidl.IKarooSystem
 import com.ridevault.karoo.mapping.SensorBikeMapper
 import com.ridevault.karoo.strava.StravaTokenStore
 import com.ridevault.karoo.upload.FitFileFinder
@@ -27,11 +23,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import timber.log.Timber
-import java.util.UUID
 
 /**
  * RideVault Karoo Extension
@@ -57,10 +49,10 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
     private var rideMonitorJob: Job? = null
     private var sessionActive = false
     private var activeRideProfileName: String? = null
+    private var activeRideProfileId: String? = null
 
-    // The bike name extracted from the ride profile's raw JSON — the SDK's
-    // RideProfile class drops this field because of ignoreUnknownKeys, but
-    // the Karoo system app includes it in the JSON payload.
+    // The bike name resolved from the ride profile's ID — if the profile ID
+    // matches a Bikes.Bike.id, we know which bike is assigned to this profile
     private var profileBikeName: String? = null
 
     // Bike odometer tracking — snapshot at ride start, compare at ride end
@@ -80,18 +72,31 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
         karooSystem.connect { connected ->
             Timber.i("RideVault Karoo connected: $connected")
             if (connected) {
-                // Track the active ride profile — we use a raw JSON consumer
-                // to intercept the full payload from the Karoo system app,
-                // because the SDK's RideProfile class drops the bike field
-                // (ignoreUnknownKeys silently discards it during deserialization)
-                addRawProfileConsumer()
+                // Track the active ride profile — log ALL exposed fields
+                // including the id, which may reference a bike profile
+                karooSystem.addConsumer { event: ActiveRideProfile ->
+                    val profile = event.profile
+                    activeRideProfileName = profile.name
+                    activeRideProfileId = profile.id
+                    Timber.i(
+                        "Active ride profile: name='${profile.name}' id='${profile.id}' " +
+                            "type=${profile.defaultActivityType} routing=${profile.routingPreference} " +
+                            "indoor=${profile.indoor} pages=${profile.pages.size}",
+                    )
 
-                // Track all bike profiles — we use odometer changes to
-                // infer which bike was ridden (the SDK doesn't expose
-                // which bike is assigned to a ride profile)
+                    // Check if profile.id matches any bike id — that would
+                    // mean the profile's id IS the default bike reference
+                    resolveProfileBike()
+                }
+
+                // Track all bike profiles — log IDs and names so we can
+                // compare them against the ride profile ID
                 karooSystem.addConsumer { event: Bikes ->
                     currentBikes = event.bikes
-                    Timber.i("Karoo bikes updated: ${event.bikes.map { "${it.name}(${it.odometer}m)" }}")
+                    Timber.i("Karoo bikes: ${event.bikes.map { "id='${it.id}' name='${it.name}' odo=${it.odometer}m" }}")
+
+                    // Re-check profile→bike mapping whenever bikes update
+                    resolveProfileBike()
                 }
 
                 if (tokenStore.hasToken()) {
@@ -119,93 +124,28 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
     }
 
     /**
-     * Register a raw JSON consumer for the ActiveRideProfile event.
-     *
-     * The Karoo system app sends the full ride profile JSON including a bike
-     * field, but the SDK's RideProfile data class doesn't declare it and
-     * DefaultJson's ignoreUnknownKeys=true silently drops it. By creating
-     * our own IHandler and reading the raw bundle string, we can parse the
-     * full JSON and extract the bike name the SDK hides.
+     * Try to resolve the ride profile's default bike by checking if the
+     * profile ID matches a bike ID, or if the profile ID string appears
+     * in any bike's id or name.
      */
-    private fun addRawProfileConsumer() {
-        val consumerId = UUID.randomUUID().toString()
-        val handler = object : IHandler.Stub() {
-            override fun onNext(bundle: Bundle) {
-                val json = bundle.getString("value")
-                Timber.i("Raw ActiveRideProfile JSON: $json")
-                if (json != null) {
-                    try {
-                        val root = Json.parseToJsonElement(json).jsonObject
-                        // The profile object is nested under "profile"
-                        val profile = root["profile"]?.jsonObject
-                        activeRideProfileName = profile?.get("name")?.jsonPrimitive?.content
-                        Timber.i("Active ride profile: $activeRideProfileName")
+    private fun resolveProfileBike() {
+        val profileId = activeRideProfileId ?: return
+        if (currentBikes.isEmpty()) return
 
-                        // Log ALL keys in the profile object to discover hidden fields
-                        val profileKeys = profile?.keys ?: emptySet()
-                        Timber.i("Profile JSON keys: $profileKeys")
-
-                        // Look for bike-related fields — the Karoo may use any of these names
-                        val bikeFieldNames = listOf(
-                            "bike", "bikeId", "bike_id", "bikeName", "bike_name",
-                            "defaultBike", "default_bike", "defaultBikeId", "default_bike_id",
-                            "bikeProfile", "bike_profile", "bikeProfileId", "bike_profile_id",
-                            "bikeProfileName", "bike_profile_name", "equipment", "equipmentId",
-                        )
-                        for (fieldName in bikeFieldNames) {
-                            val value = profile?.get(fieldName)
-                            if (value != null) {
-                                Timber.i("Found bike field '$fieldName' = $value")
-                                // Try to extract the bike name — could be a string or nested object
-                                profileBikeName = try {
-                                    value.jsonPrimitive.content
-                                } catch (_: Exception) {
-                                    // It's a nested object — look for a "name" field
-                                    try {
-                                        value.jsonObject["name"]?.jsonPrimitive?.content
-                                    } catch (_: Exception) {
-                                        value.toString()
-                                    }
-                                }
-                                Timber.i("Profile default bike name: $profileBikeName")
-                                break
-                            }
-                        }
-                        if (profileBikeName == null) {
-                            // Log the full profile JSON so we can inspect it
-                            Timber.i("No known bike field found in profile. Full profile: $profile")
-                        }
-                    } catch (e: Exception) {
-                        Timber.e(e, "Failed to parse raw ActiveRideProfile JSON")
-                    }
-                }
-            }
-
-            override fun onError(msg: String?) {
-                Timber.w("ActiveRideProfile error: $msg")
-            }
-
-            override fun onComplete() {
-                Timber.i("ActiveRideProfile stream complete")
-            }
+        // Direct match: profile.id == bike.id
+        val directMatch = currentBikes.find { it.id == profileId }
+        if (directMatch != null) {
+            profileBikeName = directMatch.name
+            Timber.i("Profile→bike resolved via ID match: profile.id='$profileId' → bike='${directMatch.name}'")
+            return
         }
 
-        // Build the params bundle the same way the SDK does internally:
-        // ActiveRideProfile.Params serializes to "{}" via DefaultJson
-        val params = Bundle().apply {
-            putString("value", "{}")
-            putString("package", applicationContext.packageName)
-        }
-
-        karooSystem.addConsumer(object : KarooSystemListener(consumerId) {
-            override fun register(controller: IKarooSystem?) {
-                controller?.addEventConsumer(id, params, handler)
-            }
-
-            override fun unregister(controller: IKarooSystem?) {
-                controller?.removeEventConsumer(id)
-            }
-        })
+        // No direct match — log for diagnostics
+        Timber.i(
+            "No profile→bike ID match. profile.id='$profileId', " +
+                "bike IDs=${currentBikes.map { it.id }}",
+        )
+        profileBikeName = null
     }
 
     /**
@@ -347,7 +287,11 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
             }
 
             // Launch the upload confirmation screen
-            Timber.i("Launching upload confirmation — file: ${fitFile.name}, rideProfile: ${activeRideProfileName ?: "unknown"}")
+            Timber.i(
+                "Launching upload confirmation — file: ${fitFile.name}, " +
+                    "profileBike=$profileBikeName, inferred=$inferredBikeName, " +
+                    "rideProfile=$activeRideProfileName",
+            )
 
             val intent = Intent(applicationContext, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)

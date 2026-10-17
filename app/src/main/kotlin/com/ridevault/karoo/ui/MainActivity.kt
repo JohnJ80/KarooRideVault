@@ -345,7 +345,7 @@ fun UploadConfirmationScreen(
                         // 2. Inferred bike name — from odometer change during the ride
                         // 3. Ride profile name — fuzzy match against Strava bike names
                         // 4. Single bike — if only one Strava bike, use it
-                        fun findBike(name: String): StravaApi.StravaBike? {
+                        fun findBike(name: String): StravaApi.Bike? {
                             return bikes.find { it.name.equals(name, ignoreCase = true) }
                                 ?: bikes.find {
                                     it.name.contains(name, ignoreCase = true) ||
