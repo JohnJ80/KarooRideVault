@@ -333,35 +333,10 @@ fun UploadConfirmationScreen(
                         val autoSelect = if (rideProfileName != null) {
                             // Try exact name match first (ride profile name = bike name)
                             bikes.find { it.name.equals(rideProfileName, ignoreCase = true) }
-                                // Then try substring match (e.g. profile "Domane" matches bike "Trek Domane+")
+                                // Then try contains match (e.g. profile "Domane" matches bike "Trek Domane+")
                                 ?: bikes.find {
                                     it.name.contains(rideProfileName, ignoreCase = true) ||
                                         rideProfileName.contains(it.name, ignoreCase = true)
-                                }
-                                // Then try word overlap (e.g. profile "Road Domane" shares "Domane" with "Trek Domane+")
-                                ?: run {
-                                    // Split both names into words, ignoring short words and punctuation
-                                    val profileWords = rideProfileName.lowercase()
-                                        .replace(Regex("[^a-z0-9\\s]"), "")
-                                        .split("\\s+".toRegex())
-                                        .filter { it.length >= 3 }
-                                        .toSet()
-                                    if (profileWords.isEmpty()) null
-                                    else bikes.maxByOrNull { bike ->
-                                        val bikeWords = bike.name.lowercase()
-                                            .replace(Regex("[^a-z0-9\\s]"), "")
-                                            .split("\\s+".toRegex())
-                                            .filter { it.length >= 3 }
-                                            .toSet()
-                                        (profileWords intersect bikeWords).size
-                                    }?.takeIf { bike ->
-                                        val bikeWords = bike.name.lowercase()
-                                            .replace(Regex("[^a-z0-9\\s]"), "")
-                                            .split("\\s+".toRegex())
-                                            .filter { it.length >= 3 }
-                                            .toSet()
-                                        (profileWords intersect bikeWords).isNotEmpty()
-                                    }
                                 }
                         } else null
 
@@ -371,7 +346,7 @@ fun UploadConfirmationScreen(
                         if (selected != null) {
                             selectedGearId = selected.id
                             selectedBikeName = selected.name
-                            Timber.i("Auto-selected bike: ${selected.name} (${selected.id}) from profile=$rideProfileName")
+                            Timber.i("Auto-selected bike: ${selected.name} (profile=$rideProfileName)")
                         } else {
                             Timber.i("Multiple bikes, no profile match — user must pick (profile=$rideProfileName, bikes=${bikes.map { it.name }})")
                         }
