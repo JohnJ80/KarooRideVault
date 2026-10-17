@@ -25,9 +25,11 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Divider
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -204,6 +206,7 @@ fun UploadConfirmationScreen(
     var waitingForWifi by remember { mutableStateOf(false) }
     var needsReauth by remember { mutableStateOf(false) }
     var hasTriedReauth by remember { mutableStateOf(false) }
+    var showDiscardConfirm by remember { mutableStateOf(false) }
 
     // Karoo bike profiles — populated via KarooSystemService consumer
     var karooBikes by remember { mutableStateOf<List<Bikes.Bike>>(emptyList()) }
@@ -742,6 +745,48 @@ fun UploadConfirmationScreen(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("Upload Later")
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            OutlinedButton(
+                onClick = { showDiscardConfirm = true },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    "Don't Upload",
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+
+            // Confirmation dialog for discarding the ride upload
+            if (showDiscardConfirm) {
+                AlertDialog(
+                    onDismissRequest = { showDiscardConfirm = false },
+                    title = { Text("Skip upload?") },
+                    text = {
+                        Text("This ride won't be uploaded to Strava. You can still upload the FIT file manually later.")
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                showDiscardConfirm = false
+                                Timber.i("User chose not to upload ${fitFile.name}")
+                                onDone()
+                            },
+                        ) {
+                            Text(
+                                "Don't Upload",
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showDiscardConfirm = false }) {
+                            Text("Cancel")
+                        }
+                    },
+                )
             }
         }
     }
