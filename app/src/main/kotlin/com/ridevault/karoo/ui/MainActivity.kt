@@ -49,7 +49,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ridevault.karoo.BuildConfig
 import com.ridevault.karoo.mapping.ProfileBikeMapper
-import com.ridevault.karoo.mapping.SensorBikeMapper
 import com.ridevault.karoo.strava.StravaApi
 import com.ridevault.karoo.strava.StravaTokenStore
 import com.ridevault.karoo.strava.StravaUploader
@@ -95,8 +94,8 @@ class MainActivity : ComponentActivity() {
         ensureStoragePermission()
 
         val tokenStore = StravaTokenStore(this)
-        val mapper = SensorBikeMapper(this)
         val api = StravaApi(tokenStore)
+        val profileBikeMapper = ProfileBikeMapper(this)
         karooSystem = KarooSystemService(applicationContext)
         karooSystem.connect { connected ->
             Timber.i("MainActivity Karoo connected: $connected")
@@ -121,7 +120,7 @@ class MainActivity : ComponentActivity() {
                             fitFilePath = fitFilePath,
                             fitFileName = fitFileName,
                             rideProfileName = rideProfileName,
-                            profileBikeMapper = ProfileBikeMapper(activity),
+                            profileBikeMapper = profileBikeMapper,
                             tokenStore = tokenStore,
                             api = api,
                             karooSystem = karooSystem,
@@ -137,7 +136,7 @@ class MainActivity : ComponentActivity() {
                         // Normal launch — setup or dashboard
                         RideVaultMainScreen(
                             tokenStore = tokenStore,
-                            mapper = mapper,
+                            profileBikeMapper = profileBikeMapper,
                             api = api,
                             pendingStore = pendingStore,
                             uploader = uploader,
@@ -797,7 +796,7 @@ fun UploadConfirmationScreen(
 @Composable
 fun RideVaultMainScreen(
     tokenStore: StravaTokenStore,
-    mapper: SensorBikeMapper,
+    profileBikeMapper: ProfileBikeMapper,
     api: StravaApi,
     pendingStore: PendingUploadStore,
     uploader: StravaUploader,
@@ -838,7 +837,8 @@ fun RideVaultMainScreen(
         // Normal dashboard: status, pending uploads, settings
         DashboardScreen(
             tokenStore = tokenStore,
-            mapper = mapper,
+            profileBikeMapper = profileBikeMapper,
+            api = api,
             pendingStore = pendingStore,
             uploader = uploader,
             fitFinder = fitFinder,
@@ -919,7 +919,8 @@ fun FirstRunScreen(
 @Composable
 fun DashboardScreen(
     tokenStore: StravaTokenStore,
-    mapper: SensorBikeMapper,
+    profileBikeMapper: ProfileBikeMapper,
+    api: StravaApi,
     pendingStore: PendingUploadStore,
     uploader: StravaUploader,
     fitFinder: FitFileFinder,
@@ -928,11 +929,54 @@ fun DashboardScreen(
     onFinish: () -> Unit,
 ) {
     val token = tokenStore.getToken()
-    val mapping = mapper.loadMapping()
     var pendingUploads by remember { mutableStateOf(pendingStore.loadPending()) }
     var isRetrying by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val dateFormat = remember { SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()) }
+
+    // Profile → Strava bike configuration state
+    var profileMappings by remember { mutableStateOf(profileBikeMapper.getAllMappings()) }
+    var stravaBikes by remember { mutableStateOf<List<StravaApi.Bike>>(emptyList()) }
+    var loadingBikes by remember { mutableStateOf(true) }
+    var bikesError by remember { mutableStateOf<String?>(null) }
+    // Track which profile's dropdown is expanded
+    var expandedProfile by remember { mutableStateOf<String?>(null) }
+
+    // Fetch Strava bikes on load
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            val accessToken = tokenStore.getValidAccessToken(api)
+            if (accessToken == null) {
+                bikesError = "Not connected to Strava"
+                loadingBikes = false
+                return@withContext
+            }
+            val result = api.getAthlete(accessToken)
+            result.fold(
+                onSuccess = { athlete ->
+                    var bikes = athlete.bikes
+                    if (bikes.isEmpty() && athlete.resourceState <= 2) {
+                        // Fallback: discover bikes from recent activities
+                        Timber.i("Dashboard: No bikes from /athlete, trying activities fallback")
+                        val activities = api.getAthleteActivities(accessToken).getOrNull() ?: emptyList()
+                        val gearIds = activities.mapNotNull { it.gearId }.distinct()
+                        bikes = gearIds.mapNotNull { gearId ->
+                            api.getGear(accessToken, gearId).getOrNull()?.let { gear ->
+                                StravaApi.Bike(id = gear.id, name = gear.name, distance = gear.distance)
+                            }
+                        }
+                    }
+                    stravaBikes = bikes
+                    Timber.i("Dashboard: loaded ${bikes.size} Strava bikes")
+                },
+                onFailure = { e ->
+                    Timber.e(e, "Dashboard: failed to load Strava bikes")
+                    bikesError = "Could not load Strava bikes"
+                },
+            )
+            loadingBikes = false
+        }
+    }
 
     Scaffold { padding ->
         LazyColumn(
@@ -1087,7 +1131,7 @@ fun DashboardScreen(
                 }
             }
 
-            // Bike mapping
+            // Profile → Strava Bike configuration
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -1095,36 +1139,97 @@ fun DashboardScreen(
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
                         Text(
-                            text = "Bike Mapping",
+                            text = "Ride Profile → Strava Bike",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
                         )
                         Spacer(modifier = Modifier.height(4.dp))
 
-                        if (mapping == null || mapping.mappings.isEmpty()) {
+                        if (loadingBikes) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                Text(
+                                    text = "Loading Strava bikes…",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        } else if (bikesError != null) {
                             Text(
-                                text = "No bikes configured yet. This will be set up after your first ride.",
+                                text = bikesError!!,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        } else if (stravaBikes.isEmpty()) {
+                            Text(
+                                text = "No Strava bikes found. Add bikes to your Strava profile first.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else if (profileMappings.isEmpty()) {
+                            Text(
+                                text = "No ride profiles seen yet. Complete a ride and RideVault will remember your bike choice for that profile.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         } else {
-                            mapping.mappings.forEach { entry ->
+                            Text(
+                                text = "Assign a Strava bike to each ride profile:",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+
+                            profileMappings.keys.sorted().forEach { profileName ->
+                                val currentGearId = profileMappings[profileName]
+                                val currentBikeName = stravaBikes.find { it.id == currentGearId }?.name
+                                    ?: currentGearId ?: "Not set"
+
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(vertical = 2.dp),
+                                        .padding(vertical = 4.dp),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     Text(
-                                        text = entry.sensorName,
-                                        style = MaterialTheme.typography.bodySmall,
-                                    )
-                                    Text(
-                                        text = "→ ${entry.bikeName}",
+                                        text = profileName,
                                         style = MaterialTheme.typography.bodySmall,
                                         fontWeight = FontWeight.Medium,
+                                        modifier = Modifier.weight(1f),
                                     )
+
+                                    Box {
+                                        OutlinedButton(
+                                            onClick = {
+                                                expandedProfile = if (expandedProfile == profileName) null else profileName
+                                            },
+                                        ) {
+                                            Text(
+                                                text = currentBikeName,
+                                                style = MaterialTheme.typography.labelSmall,
+                                            )
+                                        }
+                                        DropdownMenu(
+                                            expanded = expandedProfile == profileName,
+                                            onDismissRequest = { expandedProfile = null },
+                                        ) {
+                                            stravaBikes.forEach { bike ->
+                                                DropdownMenuItem(
+                                                    text = { Text(bike.name) },
+                                                    onClick = {
+                                                        profileBikeMapper.saveProfileGearId(profileName, bike.id)
+                                                        profileMappings = profileBikeMapper.getAllMappings()
+                                                        expandedProfile = null
+                                                        Timber.i("Dashboard: set '$profileName' → '${bike.name}' (${bike.id})")
+                                                    },
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                                 Divider()
                             }
