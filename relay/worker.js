@@ -1,9 +1,10 @@
 /**
  * RideVault Auth Relay — Cloudflare Worker
  *
- * Bridges Strava OAuth between a phone (browser) and the Karoo (app).
+ * Bridges Strava OAuth for both RideVault apps through a single
+ * Authorization Callback Domain.
  *
- * Flow:
+ * Karoo flow (QR code + PIN — no browser on device):
  *   1. Karoo shows QR code → phone opens /auth
  *   2. Worker redirects phone to Strava login
  *   3. User authorizes → Strava redirects to /callback
@@ -11,6 +12,13 @@
  *   5. Phone displays the PIN
  *   6. User types PIN on Karoo → app calls /token?pin=XXXXXX
  *   7. Worker returns the tokens, deletes them from KV
+ *
+ * RideVault (Garmin) flow (browser on phone — pass-through):
+ *   1. App opens /auth/ridevault in phone browser
+ *   2. Worker redirects to Strava login with /callback/ridevault
+ *   3. User authorizes → Strava redirects to /callback/ridevault
+ *   4. Worker redirects to ridevault://strava-auth/callback?code=...
+ *   5. App catches the custom scheme and exchanges the code itself
  *
  * Environment variables (set as Worker secrets):
  *   STRAVA_CLIENT_ID     — from https://www.strava.com/settings/api
@@ -36,8 +44,12 @@ export default {
       switch (url.pathname) {
         case '/auth':
           return handleAuth(url, env);
+        case '/auth/ridevault':
+          return handleAuthRideVault(url, env);
         case '/callback':
           return handleCallback(url, env);
+        case '/callback/ridevault':
+          return handleCallbackRideVault(url, env);
         case '/token':
           return handleToken(url, env, corsHeaders);
         default:
@@ -60,6 +72,52 @@ function handleAuth(url, env) {
   stravaUrl.searchParams.set('approval_prompt', 'force');
   stravaUrl.searchParams.set('scope', 'read,profile:read_all,activity:write,activity:read_all');
   return Response.redirect(stravaUrl.toString(), 302);
+}
+
+/**
+ * RideVault (Garmin) Step 1: Redirect to Strava with the /callback/ridevault
+ * return path. The phone has a browser so no QR/PIN is needed — the auth code
+ * is passed straight back to the app via its custom URI scheme.
+ */
+function handleAuthRideVault(url, env) {
+  const stravaUrl = new URL('https://www.strava.com/oauth/authorize');
+  stravaUrl.searchParams.set('client_id', env.STRAVA_CLIENT_ID);
+  stravaUrl.searchParams.set('redirect_uri', `${url.origin}/callback/ridevault`);
+  stravaUrl.searchParams.set('response_type', 'code');
+  stravaUrl.searchParams.set('approval_prompt', 'auto');
+  stravaUrl.searchParams.set('scope', 'activity:write,activity:read');
+  return Response.redirect(stravaUrl.toString(), 302);
+}
+
+/**
+ * RideVault (Garmin) Step 2: Strava redirects here with ?code=...
+ * Instead of exchanging tokens (the app does that itself), redirect
+ * to the app's custom URI scheme with the code as a query parameter.
+ */
+function handleCallbackRideVault(url, env) {
+  const code = url.searchParams.get('code');
+  const error = url.searchParams.get('error');
+  const scope = url.searchParams.get('scope');
+
+  console.log(`RideVault OAuth callback — granted scopes: ${scope}`);
+
+  if (error || !code) {
+    return htmlResponse(`
+      <h1>Authorization Failed</h1>
+      <p>${error || 'No authorization code received.'}</p>
+      <p>Close this page and try again from RideVault.</p>
+    `, 400);
+  }
+
+  // Redirect to the RideVault app via its custom URI scheme
+  const appUri = `ridevault://strava-auth/callback?code=${encodeURIComponent(code)}`;
+
+  // Show a brief page that auto-redirects, with a manual link as fallback
+  return htmlResponse(`
+    <h1>Redirecting to RideVault...</h1>
+    <p>If the app doesn't open automatically, <a href="${appUri}">tap here</a>.</p>
+    <script>window.location.href = "${appUri}";</script>
+  `);
 }
 
 /**
