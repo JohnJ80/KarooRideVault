@@ -61,6 +61,12 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
     private var preRideOdometers: Map<String, Double> = emptyMap() // bike id → odometer
     private var inferredBikeName: String? = null
 
+    // Flag: when true, the next Bikes consumer update will trigger odometer inference.
+    // This solves a race condition where RideState→Idle arrives ~500ms before the
+    // Bikes consumer delivers updated odometers.
+    @Volatile
+    private var pendingOdometerInference = false
+
     override fun onCreate() {
         super.onCreate()
         karooSystem = KarooSystemService(applicationContext)
@@ -97,6 +103,14 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
 
                     // Re-check profile→bike mapping whenever bikes update
                     resolveProfileBike()
+
+                    // If a ride just ended and we're waiting for updated odometers,
+                    // do the inference now that fresh data has arrived
+                    if (pendingOdometerInference) {
+                        pendingOdometerInference = false
+                        inferredBikeName = inferBikeFromOdometer()
+                        Timber.i("Deferred odometer inference result: ${inferredBikeName ?: "unknown"}")
+                    }
                 }
 
                 if (tokenStore.hasToken()) {
@@ -195,9 +209,26 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
                 is RideState.Idle -> {
                     if (sessionActive) {
                         sessionActive = false
-                        // Infer which bike was ridden by comparing odometers
+                        // Try immediate odometer inference first
                         inferredBikeName = inferBikeFromOdometer()
-                        Timber.i("Ride ended — inferred bike: ${inferredBikeName ?: "unknown"}")
+                        if (inferredBikeName != null) {
+                            Timber.i("Ride ended — inferred bike (immediate): $inferredBikeName")
+                        } else {
+                            // Bikes consumer often delivers updated odometers ~500ms
+                            // after the ride state goes Idle. Set a flag so the Bikes
+                            // consumer callback will retry the inference when fresh
+                            // data arrives, and use a 2s fallback timeout.
+                            Timber.i("Ride ended — no immediate odometer match, waiting for Bikes update")
+                            pendingOdometerInference = true
+                            scope.launch {
+                                delay(2000L)
+                                if (pendingOdometerInference) {
+                                    pendingOdometerInference = false
+                                    inferredBikeName = inferBikeFromOdometer()
+                                    Timber.i("Odometer inference timeout fallback: ${inferredBikeName ?: "unknown"}")
+                                }
+                            }
+                        }
                         onRideEnded()
                     }
                 }

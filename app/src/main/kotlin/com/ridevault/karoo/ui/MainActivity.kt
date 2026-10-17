@@ -346,11 +346,27 @@ fun UploadConfirmationScreen(
                         // 3. Ride profile name — fuzzy match against Strava bike names
                         // 4. Single bike — if only one Strava bike, use it
                         fun findBike(name: String): StravaApi.Bike? {
-                            return bikes.find { it.name.equals(name, ignoreCase = true) }
-                                ?: bikes.find {
-                                    it.name.contains(name, ignoreCase = true) ||
-                                        name.contains(it.name, ignoreCase = true)
-                                }
+                            // Exact match
+                            bikes.find { it.name.equals(name, ignoreCase = true) }
+                                ?.let { return it }
+                            // Substring match (one contains the other)
+                            bikes.find {
+                                it.name.contains(name, ignoreCase = true) ||
+                                    name.contains(it.name, ignoreCase = true)
+                            }?.let { return it }
+                            // Word match — find bikes sharing a significant word (4+ chars)
+                            // e.g. "Road Domane" matches "Trek Domane+" via "Domane"
+                            val queryWords = name.split(" ", "-", "_")
+                                .map { it.trim().lowercase() }
+                                .filter { it.length >= 4 }
+                            if (queryWords.isNotEmpty()) {
+                                bikes.find { bike ->
+                                    val bikeWords = bike.name.split(" ", "-", "_")
+                                        .map { it.trim().lowercase() }
+                                    queryWords.any { qw -> bikeWords.any { bw -> bw.startsWith(qw) || qw.startsWith(bw) } }
+                                }?.let { return it }
+                            }
+                            return null
                         }
 
                         val autoSelect =
