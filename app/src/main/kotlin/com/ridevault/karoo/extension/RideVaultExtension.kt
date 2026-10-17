@@ -8,6 +8,7 @@ import io.hammerhead.karooext.models.ActiveRideProfile
 import io.hammerhead.karooext.models.Bikes
 import io.hammerhead.karooext.models.RideState
 import io.hammerhead.karooext.models.SystemNotification
+import com.ridevault.karoo.mapping.ProfileBikeMapper
 import com.ridevault.karoo.mapping.SensorBikeMapper
 import com.ridevault.karoo.strava.StravaTokenStore
 import com.ridevault.karoo.upload.FitFileFinder
@@ -41,6 +42,7 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
 
     private lateinit var karooSystem: KarooSystemService
     private lateinit var mapper: SensorBikeMapper
+    private lateinit var profileBikeMapper: ProfileBikeMapper
     private lateinit var tokenStore: StravaTokenStore
     private lateinit var fitFinder: FitFileFinder
     private lateinit var pendingStore: PendingUploadStore
@@ -54,6 +56,10 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
     // The bike name resolved from the ride profile's ID — if the profile ID
     // matches a Bikes.Bike.id, we know which bike is assigned to this profile
     private var profileBikeName: String? = null
+
+    // The bike name learned from previous rides on this profile
+    // (persisted in SharedPreferences by ProfileBikeMapper)
+    private var learnedBikeName: String? = null
 
     // Bike odometer tracking — snapshot at ride start, compare at ride end
     // to infer which bike was ridden (the one whose odometer increased)
@@ -71,6 +77,7 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
         super.onCreate()
         karooSystem = KarooSystemService(applicationContext)
         mapper = SensorBikeMapper(this)
+        profileBikeMapper = ProfileBikeMapper(this)
         tokenStore = StravaTokenStore(this)
         fitFinder = FitFileFinder(this)
         pendingStore = PendingUploadStore(this)
@@ -89,6 +96,9 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
                             "type=${profile.defaultActivityType} routing=${profile.routingPreference} " +
                             "indoor=${profile.indoor} pages=${profile.pages.size}",
                     )
+
+                    // Look up learned bike for this profile (from previous rides)
+                    learnedBikeName = profileBikeMapper.getBikeForProfile(profile.name)
 
                     // Check if profile.id matches any bike id — that would
                     // mean the profile's id IS the default bike reference
@@ -110,6 +120,8 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
                         pendingOdometerInference = false
                         inferredBikeName = inferBikeFromOdometer()
                         Timber.i("Deferred odometer inference result: ${inferredBikeName ?: "unknown"}")
+                        // Learn this profile→bike mapping for future rides
+                        learnProfileBike(inferredBikeName)
                     }
                 }
 
@@ -213,6 +225,8 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
                         inferredBikeName = inferBikeFromOdometer()
                         if (inferredBikeName != null) {
                             Timber.i("Ride ended — inferred bike (immediate): $inferredBikeName")
+                            // Learn this profile→bike mapping for future rides
+                            learnProfileBike(inferredBikeName)
                         } else {
                             // Bikes consumer often delivers updated odometers ~500ms
                             // after the ride state goes Idle. Set a flag so the Bikes
@@ -226,6 +240,7 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
                                     pendingOdometerInference = false
                                     inferredBikeName = inferBikeFromOdometer()
                                     Timber.i("Odometer inference timeout fallback: ${inferredBikeName ?: "unknown"}")
+                                    learnProfileBike(inferredBikeName)
                                 }
                             }
                         }
@@ -269,6 +284,18 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
                 best?.name
             }
         }
+    }
+
+    /**
+     * Save a profile→bike mapping when odometer inference succeeds.
+     * Only learns if we have a valid profile name and bike name.
+     */
+    private fun learnProfileBike(bikeName: String?) {
+        val profileName = activeRideProfileName ?: return
+        if (bikeName == null) return
+        profileBikeMapper.learnProfileBike(profileName, bikeName)
+        // Update the in-memory learned name so it's available for the intent
+        learnedBikeName = bikeName
     }
 
     /**
@@ -320,8 +347,8 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
             // Launch the upload confirmation screen
             Timber.i(
                 "Launching upload confirmation — file: ${fitFile.name}, " +
-                    "profileBike=$profileBikeName, inferred=$inferredBikeName, " +
-                    "rideProfile=$activeRideProfileName",
+                    "learned=$learnedBikeName, profileBike=$profileBikeName, " +
+                    "inferred=$inferredBikeName, rideProfile=$activeRideProfileName",
             )
 
             val intent = Intent(applicationContext, MainActivity::class.java).apply {
@@ -332,6 +359,7 @@ class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
                 putExtra("ride_profile_name", activeRideProfileName)
                 putExtra("profile_bike_name", profileBikeName)
                 putExtra("inferred_bike_name", inferredBikeName)
+                putExtra("learned_bike_name", learnedBikeName)
             }
             try {
                 applicationContext.startActivity(intent)

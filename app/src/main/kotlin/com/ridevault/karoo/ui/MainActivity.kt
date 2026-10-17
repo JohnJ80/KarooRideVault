@@ -110,6 +110,7 @@ class MainActivity : ComponentActivity() {
         val rideProfileName = intent.getStringExtra("ride_profile_name")
         val profileBikeName = intent.getStringExtra("profile_bike_name")
         val inferredBikeName = intent.getStringExtra("inferred_bike_name")
+        val learnedBikeName = intent.getStringExtra("learned_bike_name")
 
         setContent {
             MaterialTheme {
@@ -122,6 +123,7 @@ class MainActivity : ComponentActivity() {
                             rideProfileName = rideProfileName,
                             profileBikeName = profileBikeName,
                             inferredBikeName = inferredBikeName,
+                            learnedBikeName = learnedBikeName,
                             tokenStore = tokenStore,
                             api = api,
                             karooSystem = karooSystem,
@@ -178,6 +180,7 @@ fun UploadConfirmationScreen(
     rideProfileName: String?,
     profileBikeName: String? = null,
     inferredBikeName: String? = null,
+    learnedBikeName: String? = null,
     tokenStore: StravaTokenStore,
     api: StravaApi,
     karooSystem: KarooSystemService,
@@ -340,11 +343,13 @@ fun UploadConfirmationScreen(
                     // 3. Single bike auto-select
                     if (selectedGearId == null && bikes.isNotEmpty()) {
                         // Auto-select priority:
-                        // 1. Profile bike name — the bike assigned to the ride profile
+                        // 1. Learned bike name — from previous rides on this profile
+                        //    (persisted in SharedPreferences by ProfileBikeMapper)
+                        // 2. Profile bike name — the bike assigned to the ride profile
                         //    (extracted from the raw JSON the SDK normally drops)
-                        // 2. Inferred bike name — from odometer change during the ride
-                        // 3. Ride profile name — fuzzy match against Strava bike names
-                        // 4. Single bike — if only one Strava bike, use it
+                        // 3. Inferred bike name — from odometer change during the ride
+                        // 4. Ride profile name — fuzzy match against Strava bike names
+                        // 5. Single bike — if only one Strava bike, use it
                         fun findBike(name: String): StravaApi.Bike? {
                             // Exact match
                             bikes.find { it.name.equals(name, ignoreCase = true) }
@@ -370,7 +375,8 @@ fun UploadConfirmationScreen(
                         }
 
                         val autoSelect =
-                            profileBikeName?.let { findBike(it) }
+                            learnedBikeName?.let { findBike(it) }
+                                ?: profileBikeName?.let { findBike(it) }
                                 ?: inferredBikeName?.let { findBike(it) }
                                 ?: rideProfileName?.let { findBike(it) }
 
@@ -380,9 +386,9 @@ fun UploadConfirmationScreen(
                         if (selected != null) {
                             selectedGearId = selected.id
                             selectedBikeName = selected.name
-                            Timber.i("Auto-selected bike: ${selected.name} (${selected.id}) profileBike=$profileBikeName, inferred=$inferredBikeName, profile=$rideProfileName")
+                            Timber.i("Auto-selected bike: ${selected.name} (${selected.id}) learned=$learnedBikeName, profileBike=$profileBikeName, inferred=$inferredBikeName, profile=$rideProfileName")
                         } else {
-                            Timber.i("Multiple bikes, no match — user must pick (profileBike=$profileBikeName, inferred=$inferredBikeName, profile=$rideProfileName, bikes=${bikes.map { it.name }})")
+                            Timber.i("Multiple bikes, no match — user must pick (learned=$learnedBikeName, profileBike=$profileBikeName, inferred=$inferredBikeName, profile=$rideProfileName, bikes=${bikes.map { it.name }})")
                         }
                     }
                     waitingForWifi = false
