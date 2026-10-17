@@ -1131,107 +1131,109 @@ fun DashboardScreen(
                 }
             }
 
-            // Profile → Strava Bike configuration
+            // Profile → Strava Bike configuration — header
             item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
+                Text(
+                    text = "Ride Profile → Strava Bike",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+
+            // Status / loading row
+            if (loadingBikes) {
+                item {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                         Text(
-                            text = "Ride Profile → Strava Bike",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
+                            text = "Loading Strava bikes…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
+                    }
+                }
+            } else if (bikesError != null) {
+                item {
+                    Text(
+                        text = bikesError!!,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            } else if (stravaBikes.isEmpty()) {
+                item {
+                    Text(
+                        text = "No Strava bikes found. Add bikes to your Strava profile first.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else if (profileMappings.isEmpty()) {
+                item {
+                    Text(
+                        text = "No ride profiles seen yet. Complete a ride and RideVault will remember your bike choice for that profile.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                // Each profile gets its own scrollable row
+                val sortedProfiles = profileMappings.keys.sorted()
+                items(sortedProfiles.size) { index ->
+                    val profileName = sortedProfiles[index]
+                    val currentGearId = profileMappings[profileName]
+                    val currentBikeName = stravaBikes.find { it.id == currentGearId }?.name
+                        ?: currentGearId ?: "Not set"
 
-                        if (loadingBikes) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                                Text(
-                                    text = "Loading Strava bikes…",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        } else if (bikesError != null) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
                             Text(
-                                text = bikesError!!,
+                                text = profileName,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.error,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.weight(1f),
                             )
-                        } else if (stravaBikes.isEmpty()) {
-                            Text(
-                                text = "No Strava bikes found. Add bikes to your Strava profile first.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        } else if (profileMappings.isEmpty()) {
-                            Text(
-                                text = "No ride profiles seen yet. Complete a ride and RideVault will remember your bike choice for that profile.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        } else {
-                            Text(
-                                text = "Assign a Strava bike to each ride profile:",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
 
-                            profileMappings.keys.sorted().forEach { profileName ->
-                                val currentGearId = profileMappings[profileName]
-                                val currentBikeName = stravaBikes.find { it.id == currentGearId }?.name
-                                    ?: currentGearId ?: "Not set"
-
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 4.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically,
+                            Box {
+                                OutlinedButton(
+                                    onClick = {
+                                        expandedProfile = if (expandedProfile == profileName) null else profileName
+                                    },
                                 ) {
                                     Text(
-                                        text = profileName,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        fontWeight = FontWeight.Medium,
-                                        modifier = Modifier.weight(1f),
+                                        text = currentBikeName,
+                                        style = MaterialTheme.typography.labelSmall,
                                     )
-
-                                    Box {
-                                        OutlinedButton(
+                                }
+                                DropdownMenu(
+                                    expanded = expandedProfile == profileName,
+                                    onDismissRequest = { expandedProfile = null },
+                                ) {
+                                    stravaBikes.forEach { bike ->
+                                        DropdownMenuItem(
+                                            text = { Text(bike.name) },
                                             onClick = {
-                                                expandedProfile = if (expandedProfile == profileName) null else profileName
+                                                profileBikeMapper.saveProfileGearId(profileName, bike.id)
+                                                profileMappings = profileBikeMapper.getAllMappings()
+                                                expandedProfile = null
+                                                Timber.i("Dashboard: set '$profileName' → '${bike.name}' (${bike.id})")
                                             },
-                                        ) {
-                                            Text(
-                                                text = currentBikeName,
-                                                style = MaterialTheme.typography.labelSmall,
-                                            )
-                                        }
-                                        DropdownMenu(
-                                            expanded = expandedProfile == profileName,
-                                            onDismissRequest = { expandedProfile = null },
-                                        ) {
-                                            stravaBikes.forEach { bike ->
-                                                DropdownMenuItem(
-                                                    text = { Text(bike.name) },
-                                                    onClick = {
-                                                        profileBikeMapper.saveProfileGearId(profileName, bike.id)
-                                                        profileMappings = profileBikeMapper.getAllMappings()
-                                                        expandedProfile = null
-                                                        Timber.i("Dashboard: set '$profileName' → '${bike.name}' (${bike.id})")
-                                                    },
-                                                )
-                                            }
-                                        }
+                                        )
                                     }
                                 }
-                                Divider()
                             }
                         }
                     }
