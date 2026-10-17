@@ -37,7 +37,7 @@ import timber.log.Timber
  * ride profile by ProfileBikeMapper. Future rides on the same
  * profile auto-select the saved bike.
  */
-class RideVaultExtension : KarooExtension("ridevault", "0.2.0") {
+class RideVaultExtension : KarooExtension("ridevault", "0.3.0") {
 
     private lateinit var karooSystem: KarooSystemService
     private lateinit var tokenStore: StravaTokenStore
