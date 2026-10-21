@@ -2,7 +2,13 @@ package com.ridevault.karoo.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.core.app.ActivityCompat
@@ -44,6 +50,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -168,6 +175,35 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/**
+ * If MANAGE_EXTERNAL_STORAGE is not granted, open the Android Settings
+ * page where the user can toggle "All files access" for this app.
+ * Required on K3 (API 30+) to read FIT files written by the Karoo system.
+ * Called once after Strava auth completes — it's a one-time setup step.
+ */
+private fun requestAllFilesAccessIfNeeded(context: Context) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+        Timber.i("All Files Access not granted — launching Settings intent")
+        try {
+            val intent = Intent(
+                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                Uri.parse("package:${context.packageName}"),
+            )
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            Timber.e(e, "App-specific All Files Access intent failed, trying general")
+            try {
+                val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                context.startActivity(intent)
+            } catch (e2: Exception) {
+                Timber.e(e2, "All Files Access settings intent failed entirely")
+            }
+        }
+    } else {
+        Timber.i("All Files Access already granted or not needed (API ${Build.VERSION.SDK_INT})")
+    }
+}
+
 // ── Upload Confirmation (after ride ends) ──────────────────────
 
 @Composable
@@ -185,6 +221,7 @@ fun UploadConfirmationScreen(
     onDone: () -> Unit,
     onNeedsAuth: () -> Unit,
 ) {
+    val localContext = LocalContext.current
     val fitFile = remember { File(fitFilePath) }
     val dateFormat = remember { SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()) }
     val rideTime = remember {
@@ -399,6 +436,8 @@ fun UploadConfirmationScreen(
                 uploadError = null
                 hasTriedReauth = true
                 scope.launch { loadBikes() }
+                // On K3, prompt for "All files access" so FIT files are readable
+                requestAllFilesAccessIfNeeded(localContext)
             },
             onCancel = { showAuthScreen = false },
         )
@@ -803,6 +842,7 @@ fun RideVaultMainScreen(
     fitFinder: FitFileFinder,
     onFinish: () -> Unit,
 ) {
+    val context = LocalContext.current
     var isConnected by remember { mutableStateOf(tokenStore.hasToken()) }
     var showAuthScreen by remember { mutableStateOf(false) }
 
@@ -820,6 +860,8 @@ fun RideVaultMainScreen(
                 authJustCompleted = true
                 // Clear auth-failure flags on pending uploads
                 pendingStore.clearAuthFlags()
+                // On K3, prompt for "All files access" so FIT files are readable
+                requestAllFilesAccessIfNeeded(context)
             },
             onCancel = {
                 showAuthScreen = false
