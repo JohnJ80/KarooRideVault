@@ -1,6 +1,12 @@
 package com.ridevault.karoo.extension
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Intent
+import android.os.Build
+import androidx.core.app.NotificationCompat
+import com.ridevault.karoo.R
 import com.ridevault.karoo.ui.MainActivity
 import io.hammerhead.karooext.KarooSystemService
 import io.hammerhead.karooext.extension.KarooExtension
@@ -39,6 +45,11 @@ import timber.log.Timber
  */
 class RideVaultExtension : KarooExtension("ridevault", "0.4.0") {
 
+    companion object {
+        private const val UPLOAD_CHANNEL_ID = "ridevault_upload"
+        private const val UPLOAD_NOTIFICATION_ID = 9001
+    }
+
     private lateinit var karooSystem: KarooSystemService
     private lateinit var tokenStore: StravaTokenStore
     private lateinit var fitFinder: FitFileFinder
@@ -55,6 +66,21 @@ class RideVaultExtension : KarooExtension("ridevault", "0.4.0") {
         tokenStore = StravaTokenStore(this)
         fitFinder = FitFileFinder(this)
         pendingStore = PendingUploadStore(this)
+
+        // Create high-importance notification channel for upload prompts.
+        // On K3 (Android 12+), background services can't launch activities
+        // directly — a full-screen intent notification is the workaround.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                UPLOAD_CHANNEL_ID,
+                "Upload Prompts",
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = "Shown after a ride ends to prompt Strava upload"
+            }
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.createNotificationChannel(channel)
+        }
 
         karooSystem.connect { connected ->
             Timber.i("RideVault Karoo connected: $connected")
@@ -183,7 +209,10 @@ class RideVaultExtension : KarooExtension("ridevault", "0.4.0") {
                 return@launch
             }
 
-            // Launch the upload confirmation screen
+            // Launch the upload confirmation screen.
+            // On K3 (Android 12+), background activity starts are blocked,
+            // so we use a full-screen intent notification which Android
+            // either launches directly or shows as a heads-up notification.
             Timber.i("Launching upload confirmation — file: ${fitFile.name}, profile=$activeRideProfileName")
 
             val intent = Intent(applicationContext, MainActivity::class.java).apply {
@@ -193,11 +222,37 @@ class RideVaultExtension : KarooExtension("ridevault", "0.4.0") {
                 putExtra("fit_file_name", fitFile.name)
                 putExtra("ride_profile_name", activeRideProfileName)
             }
-            try {
-                applicationContext.startActivity(intent)
-                Timber.i("Upload confirmation activity launched successfully")
-            } catch (e: Exception) {
-                Timber.e(e, "Failed to launch upload confirmation activity")
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // Android 12+ — use full-screen intent notification
+                val pendingIntent = PendingIntent.getActivity(
+                    applicationContext,
+                    0,
+                    intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                )
+
+                val notification = NotificationCompat.Builder(applicationContext, UPLOAD_CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_ridevault)
+                    .setContentTitle("Ride complete")
+                    .setContentText("Tap to upload to Strava")
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setCategory(NotificationCompat.CATEGORY_CALL)
+                    .setFullScreenIntent(pendingIntent, true)
+                    .setAutoCancel(true)
+                    .build()
+
+                val nm = getSystemService(NotificationManager::class.java)
+                nm.notify(UPLOAD_NOTIFICATION_ID, notification)
+                Timber.i("Full-screen intent notification posted for upload confirmation")
+            } else {
+                // K2 / older Android — direct activity launch works
+                try {
+                    applicationContext.startActivity(intent)
+                    Timber.i("Upload confirmation activity launched directly")
+                } catch (e: Exception) {
+                    Timber.e(e, "Failed to launch upload confirmation activity")
+                }
             }
         }
     }
