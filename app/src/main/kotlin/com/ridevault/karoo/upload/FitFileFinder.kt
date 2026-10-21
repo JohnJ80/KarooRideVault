@@ -2,9 +2,12 @@ package com.ridevault.karoo.upload
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Build
 import android.os.Environment
+import android.provider.MediaStore
 import timber.log.Timber
 import java.io.File
+import java.io.FileOutputStream
 
 /**
  * Finds .FIT files from completed rides and tracks upload history.
@@ -78,66 +81,117 @@ class FitFileFinder(private val context: Context) {
             Timber.w("File API found 0 .fit files ($allCount total items) — trying shell fallback")
         }
 
-        // --- Shell fallback for K3 scoped storage ---
-        return findViaShell()
+        // --- MediaStore fallback for K3 scoped storage ---
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            Timber.i("Trying MediaStore fallback (API ${Build.VERSION.SDK_INT})")
+            val mediaStoreResult = findViaMediaStore()
+            if (mediaStoreResult != null) return mediaStoreResult
+        }
+
+        Timber.w("All methods failed to find a FIT file")
+        return null
     }
 
     /**
-     * Use shell commands to find the newest .fit file and copy it to
-     * app cache. Shell processes bypass Android's scoped storage filter,
-     * so they can see files that listFiles() hides.
+     * Query MediaStore.Files for .fit files in the FitFiles directory.
+     * On Android 10+ (API 29+), MediaStore is the correct way to access
+     * files created by other apps. The Karoo system writes FIT files
+     * which get indexed by MediaStore automatically.
+     *
+     * We copy the file to app cache via ContentResolver so the upload
+     * code can read it with normal File I/O.
      */
-    private fun findViaShell(): File? {
+    private fun findViaMediaStore(): File? {
         try {
-            // List .fit files sorted newest-first
-            val lsProcess = Runtime.getRuntime().exec(
-                arrayOf("sh", "-c", "ls -t ${FIT_DIR.absolutePath}/*.fit 2>/dev/null"),
+            val resolver = context.contentResolver
+            val collection = MediaStore.Files.getContentUri("external")
+
+            val projection = arrayOf(
+                MediaStore.Files.FileColumns._ID,
+                MediaStore.Files.FileColumns.DISPLAY_NAME,
+                MediaStore.Files.FileColumns.DATE_MODIFIED,
+                MediaStore.Files.FileColumns.SIZE,
+                MediaStore.Files.FileColumns.RELATIVE_PATH,
             )
-            val lsOutput = lsProcess.inputStream.bufferedReader().readText().trim()
-            val lsError = lsProcess.errorStream.bufferedReader().readText().trim()
-            lsProcess.waitFor()
 
-            if (lsOutput.isBlank()) {
-                Timber.w("Shell ls found no .fit files. stderr: $lsError")
-                return null
-            }
+            // Look for .fit files in the FitFiles directory, sorted newest first
+            val selection = "${MediaStore.Files.FileColumns.RELATIVE_PATH} LIKE ? AND " +
+                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?"
+            val selectionArgs = arrayOf("FitFiles/%", "%.fit")
+            val sortOrder = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
 
-            // First line is the newest file (ls -t sorts by mtime)
-            val newestPath = lsOutput.lines().first().trim()
-            Timber.i("Shell found newest .fit: $newestPath")
+            resolver.query(collection, projection, selection, selectionArgs, sortOrder)?.use { cursor ->
+                Timber.i("MediaStore query returned ${cursor.count} results")
 
-            // Copy to app cache so Java File API can read it for upload
-            val cacheDir = File(context.cacheDir, "fit_files")
-            cacheDir.mkdirs()
-            val srcName = File(newestPath).name
-            val cachedFile = File(cacheDir, srcName)
-
-            val cpProcess = Runtime.getRuntime().exec(
-                arrayOf("cp", newestPath, cachedFile.absolutePath),
-            )
-            cpProcess.waitFor()
-
-            if (cachedFile.exists() && cachedFile.length() > 0) {
-                Timber.i("Shell copied FIT file to cache: ${cachedFile.name} (${cachedFile.length()} bytes)")
-
-                // Check age — don't return stale files
-                val now = System.currentTimeMillis()
-                val cutoff = now - MAX_AGE_MS
-                if (cachedFile.lastModified() < cutoff) {
-                    Timber.w("Cached FIT file is too old (${cachedFile.lastModified()} < $cutoff)")
-                    cachedFile.delete()
+                if (cursor.count == 0) {
+                    // Try broader search without path filter in case path format differs
+                    Timber.i("Trying broader MediaStore query without path filter")
+                    resolver.query(
+                        collection,
+                        projection,
+                        "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?",
+                        arrayOf("%.fit"),
+                        sortOrder,
+                    )?.use { broadCursor ->
+                        Timber.i("Broad MediaStore query returned ${broadCursor.count} results")
+                        val nameIdx = broadCursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
+                        val pathIdx = broadCursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.RELATIVE_PATH)
+                        var logged = 0
+                        while (broadCursor.moveToNext() && logged < 5) {
+                            Timber.i("  MediaStore .fit file: ${broadCursor.getString(pathIdx)}${broadCursor.getString(nameIdx)}")
+                            logged++
+                        }
+                    }
                     return null
                 }
 
-                return cachedFile
-            } else {
-                Timber.w("Shell cp failed — cached file missing or empty")
-                return null
+                val idIdx = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
+                val nameIdx = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
+                val dateIdx = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_MODIFIED)
+                val sizeIdx = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.SIZE)
+                val pathIdx = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.RELATIVE_PATH)
+
+                val now = System.currentTimeMillis()
+                val cutoffSec = (now - MAX_AGE_MS) / 1000 // DATE_MODIFIED is in seconds
+
+                while (cursor.moveToNext()) {
+                    val id = cursor.getLong(idIdx)
+                    val name = cursor.getString(nameIdx)
+                    val dateMod = cursor.getLong(dateIdx)
+                    val size = cursor.getLong(sizeIdx)
+                    val path = cursor.getString(pathIdx)
+
+                    Timber.i("MediaStore candidate: $path$name (id=$id, size=$size, date=$dateMod)")
+
+                    if (dateMod < cutoffSec) {
+                        Timber.w("MediaStore file too old: $name")
+                        continue
+                    }
+
+                    // Copy via ContentResolver to app cache
+                    val uri = android.content.ContentUris.withAppendedId(collection, id)
+                    val cacheDir = File(context.cacheDir, "fit_files")
+                    cacheDir.mkdirs()
+                    val cachedFile = File(cacheDir, name)
+
+                    resolver.openInputStream(uri)?.use { input ->
+                        FileOutputStream(cachedFile).use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+
+                    if (cachedFile.exists() && cachedFile.length() > 0) {
+                        Timber.i("MediaStore copied FIT to cache: ${cachedFile.name} (${cachedFile.length()} bytes)")
+                        return cachedFile
+                    }
+                }
             }
+
+            Timber.w("MediaStore found no usable FIT files")
         } catch (e: Exception) {
-            Timber.e(e, "Shell fallback failed")
-            return null
+            Timber.e(e, "MediaStore fallback failed")
         }
+        return null
     }
 
     /**
