@@ -15,7 +15,7 @@ import java.io.File
  * the same ride if the extension restarts or the ride-end event
  * fires twice.
  */
-class FitFileFinder(context: Context) {
+class FitFileFinder(private val context: Context) {
 
     companion object {
         /** Karoo saves FIT files here after each ride */
@@ -46,83 +46,98 @@ class FitFileFinder(context: Context) {
 
     /**
      * Find the most recently modified .FIT file in /sdcard/FitFiles/.
-     * Returns null if no recent FIT file is found or if the directory
-     * doesn't exist (shouldn't happen on Karoo, but defensive).
+     *
+     * On K3 (Android API 32), scoped storage hides other apps' files
+     * from the Java File API even though the directory is readable.
+     * We first try the normal listFiles() path (works on K2), and if
+     * that finds no .fit files we fall back to shell commands to list
+     * and copy the file into our app cache where Java can read it.
      */
     fun findLatestFitFile(): File? {
-        // --- K3 diagnostics: log everything about directory access ---
         Timber.i("FIT_DIR path: ${FIT_DIR.absolutePath}")
-        Timber.i("FIT_DIR.exists(): ${FIT_DIR.exists()}")
-        Timber.i("FIT_DIR.isDirectory(): ${FIT_DIR.isDirectory}")
-        Timber.i("FIT_DIR.canRead(): ${FIT_DIR.canRead()}")
         Timber.i("isExternalStorageManager: ${Environment.isExternalStorageManager()}")
 
-        val allFiles = FIT_DIR.listFiles()
-        Timber.i("FIT_DIR.listFiles() returned: ${allFiles?.size ?: "null"}")
+        // --- Try normal Java File API first (works on K2) ---
+        if (FIT_DIR.exists() && FIT_DIR.isDirectory) {
+            val now = System.currentTimeMillis()
+            val cutoff = now - MAX_AGE_MS
 
-        // Shell fallback: try ls if listFiles returns null/empty
-        if (allFiles == null || allFiles.isEmpty()) {
-            Timber.w("listFiles empty/null — trying shell ls fallback")
-            try {
-                val process = Runtime.getRuntime().exec(arrayOf("ls", "-la", FIT_DIR.absolutePath))
-                val output = process.inputStream.bufferedReader().readText()
-                val error = process.errorStream.bufferedReader().readText()
-                process.waitFor()
-                Timber.i("Shell ls output:\n$output")
-                if (error.isNotBlank()) Timber.w("Shell ls stderr: $error")
-
-                // Parse ls output to find .fit files
-                val fitFiles = output.lines()
-                    .filter { it.endsWith(".fit", ignoreCase = true) || it.endsWith(".FIT") }
-                    .mapNotNull { line ->
-                        // ls -la output: last field is the filename
-                        val name = line.trim().split("\\s+".toRegex()).lastOrNull()
-                        if (name != null) File(FIT_DIR, name) else null
-                    }
-                    .filter { it.exists() && it.length() > 0 }
-
-                Timber.i("Shell fallback found ${fitFiles.size} .fit files")
-
-                if (fitFiles.isNotEmpty()) {
-                    val now = System.currentTimeMillis()
-                    val cutoff = now - MAX_AGE_MS
-                    val latest = fitFiles
-                        .filter { it.lastModified() > cutoff }
-                        .maxByOrNull { it.lastModified() }
-
-                    if (latest != null) {
-                        Timber.i("Shell fallback found FIT file: ${latest.name} (${latest.length()} bytes)")
-                        return latest
-                    }
-                }
-            } catch (e: Exception) {
-                Timber.e(e, "Shell ls fallback failed")
+            val fitFile = FIT_DIR.listFiles { file ->
+                file.isFile &&
+                    file.extension.equals("fit", ignoreCase = true) &&
+                    file.lastModified() > cutoff
             }
-        }
-        // --- end K3 diagnostics ---
+                ?.maxByOrNull { it.lastModified() }
 
-        if (!FIT_DIR.exists() || !FIT_DIR.isDirectory) {
-            Timber.w("FIT directory not found: ${FIT_DIR.absolutePath}")
+            if (fitFile != null) {
+                Timber.i("Found FIT file via File API: ${fitFile.name} (${fitFile.length()} bytes)")
+                return fitFile
+            }
+
+            val allCount = FIT_DIR.listFiles()?.size ?: 0
+            Timber.w("File API found 0 .fit files ($allCount total items) — trying shell fallback")
+        }
+
+        // --- Shell fallback for K3 scoped storage ---
+        return findViaShell()
+    }
+
+    /**
+     * Use shell commands to find the newest .fit file and copy it to
+     * app cache. Shell processes bypass Android's scoped storage filter,
+     * so they can see files that listFiles() hides.
+     */
+    private fun findViaShell(): File? {
+        try {
+            // List .fit files sorted newest-first
+            val lsProcess = Runtime.getRuntime().exec(
+                arrayOf("sh", "-c", "ls -t ${FIT_DIR.absolutePath}/*.fit 2>/dev/null"),
+            )
+            val lsOutput = lsProcess.inputStream.bufferedReader().readText().trim()
+            val lsError = lsProcess.errorStream.bufferedReader().readText().trim()
+            lsProcess.waitFor()
+
+            if (lsOutput.isBlank()) {
+                Timber.w("Shell ls found no .fit files. stderr: $lsError")
+                return null
+            }
+
+            // First line is the newest file (ls -t sorts by mtime)
+            val newestPath = lsOutput.lines().first().trim()
+            Timber.i("Shell found newest .fit: $newestPath")
+
+            // Copy to app cache so Java File API can read it for upload
+            val cacheDir = File(context.cacheDir, "fit_files")
+            cacheDir.mkdirs()
+            val srcName = File(newestPath).name
+            val cachedFile = File(cacheDir, srcName)
+
+            val cpProcess = Runtime.getRuntime().exec(
+                arrayOf("cp", newestPath, cachedFile.absolutePath),
+            )
+            cpProcess.waitFor()
+
+            if (cachedFile.exists() && cachedFile.length() > 0) {
+                Timber.i("Shell copied FIT file to cache: ${cachedFile.name} (${cachedFile.length()} bytes)")
+
+                // Check age — don't return stale files
+                val now = System.currentTimeMillis()
+                val cutoff = now - MAX_AGE_MS
+                if (cachedFile.lastModified() < cutoff) {
+                    Timber.w("Cached FIT file is too old (${cachedFile.lastModified()} < $cutoff)")
+                    cachedFile.delete()
+                    return null
+                }
+
+                return cachedFile
+            } else {
+                Timber.w("Shell cp failed — cached file missing or empty")
+                return null
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Shell fallback failed")
             return null
         }
-
-        val now = System.currentTimeMillis()
-        val cutoff = now - MAX_AGE_MS
-
-        val fitFile = FIT_DIR.listFiles { file ->
-            file.isFile &&
-                file.extension.equals("fit", ignoreCase = true) &&
-                file.lastModified() > cutoff
-        }
-            ?.maxByOrNull { it.lastModified() }
-
-        if (fitFile != null) {
-            Timber.i("Found FIT file: ${fitFile.name} (${fitFile.length()} bytes)")
-        } else {
-            Timber.w("No recent FIT files found in ${FIT_DIR.absolutePath}")
-        }
-
-        return fitFile
     }
 
     /**
