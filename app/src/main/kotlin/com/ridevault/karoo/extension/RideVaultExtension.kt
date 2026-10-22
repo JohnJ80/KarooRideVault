@@ -43,7 +43,7 @@ import timber.log.Timber
  * ride profile by ProfileBikeMapper. Future rides on the same
  * profile auto-select the saved bike.
  */
-class RideVaultExtension : KarooExtension("ridevault", "0.5.0") {
+class RideVaultExtension : KarooExtension("ridevault", "0.5.1") {
 
     companion object {
         private const val UPLOAD_CHANNEL_ID = "ridevault_upload"
