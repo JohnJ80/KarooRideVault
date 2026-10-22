@@ -2,6 +2,7 @@ package com.ridevault.karoo.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -122,6 +123,9 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     if (action == "confirm_upload" && fitFilePath != null && fitFileName != null) {
+                        // Cancel the full-screen intent notification now that the UI is open
+                        val nm = getSystemService(NotificationManager::class.java)
+                        nm.cancel(9001) // UPLOAD_NOTIFICATION_ID from RideVaultExtension
                         // Ride just ended — show upload confirmation
                         UploadConfirmationScreen(
                             fitFilePath = fitFilePath,

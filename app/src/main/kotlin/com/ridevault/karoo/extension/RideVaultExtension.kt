@@ -243,6 +243,7 @@ class RideVaultExtension : KarooExtension("ridevault", "0.5.0") {
                     .build()
 
                 val nm = getSystemService(NotificationManager::class.java)
+                nm.cancel(UPLOAD_NOTIFICATION_ID) // clear any lingering notification so Android treats this as fresh
                 nm.notify(UPLOAD_NOTIFICATION_ID, notification)
                 Timber.i("Full-screen intent notification posted for upload confirmation")
             } else {

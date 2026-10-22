@@ -38,10 +38,10 @@ class FitFileFinder(private val context: Context) {
         /**
          * Wait for the FIT file to be fully written.
          * The Karoo may still be flushing data when the ride-end event fires.
-         * On K3, the Idle state fires before the FIT file is fully written —
-         * 6 seconds gives enough headroom for both K2 and K3.
+         * With All Files Access granted, file discovery is fast. A short
+         * delay gives the OS time to finish writing and close the file.
          */
-        const val SETTLE_DELAY_MS = 6000L
+        const val SETTLE_DELAY_MS = 2000L
     }
 
     private val prefs: SharedPreferences =
