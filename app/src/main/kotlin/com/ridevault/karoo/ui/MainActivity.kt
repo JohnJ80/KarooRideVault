@@ -214,6 +214,14 @@ private fun requestAllFilesAccessIfNeeded(context: Context) {
 
 // ── Upload Confirmation (after ride ends) ──────────────────────
 
+// Connection state for progressive status display
+enum class ConnectionState {
+    WAITING_FOR_WIFI,
+    CONNECTING_TO_STRAVA,
+    READY,
+    FAILED,
+}
+
 @Composable
 fun UploadConfirmationScreen(
     fitFilePath: String,
@@ -234,14 +242,6 @@ fun UploadConfirmationScreen(
     val dateFormat = remember { SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()) }
     val rideTime = remember {
         if (fitFile.exists()) dateFormat.format(Date(fitFile.lastModified())) else fitFileName
-    }
-
-    // Connection state for progressive status display
-    enum class ConnectionState {
-        WAITING_FOR_WIFI,
-        CONNECTING_TO_STRAVA,
-        READY,
-        FAILED,
     }
 
     var selectedGearId by remember { mutableStateOf<String?>(null) }
