@@ -5,6 +5,10 @@ import android.content.pm.PackageManager
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -232,18 +236,26 @@ fun UploadConfirmationScreen(
         if (fitFile.exists()) dateFormat.format(Date(fitFile.lastModified())) else fitFileName
     }
 
+    // Connection state for progressive status display
+    enum class ConnectionState {
+        WAITING_FOR_WIFI,
+        CONNECTING_TO_STRAVA,
+        READY,
+        FAILED,
+    }
+
     var selectedGearId by remember { mutableStateOf<String?>(null) }
     var selectedBikeName by remember { mutableStateOf("Select bike…") }
     var bikes by remember { mutableStateOf<List<StravaApi.Bike>>(emptyList()) }
     var loadingBikes by remember { mutableStateOf(true) }
     var bikeLoadError by remember { mutableStateOf<String?>(null) }
+    var connectionState by remember { mutableStateOf(ConnectionState.WAITING_FOR_WIFI) }
     var uploading by remember { mutableStateOf(false) }
     var uploadDone by remember { mutableStateOf(false) }
     var uploadError by remember { mutableStateOf<String?>(null) }
     var showAuthScreen by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    var waitingForWifi by remember { mutableStateOf(false) }
     var needsReauth by remember { mutableStateOf(false) }
     var hasTriedReauth by remember { mutableStateOf(false) }
     var showDiscardConfirm by remember { mutableStateOf(false) }
@@ -312,11 +324,12 @@ fun UploadConfirmationScreen(
         }
     }
 
-    // Reusable bike-loading function — retries automatically while waiting for WiFi
-    suspend fun loadBikes() {
-        loadingBikes = true
-        bikeLoadError = null
-        waitingForWifi = false
+    /**
+     * Fetch Strava bikes once we have network.
+     * Called after WiFi is confirmed available.
+     */
+    suspend fun fetchStravaBikes() {
+        connectionState = ConnectionState.CONNECTING_TO_STRAVA
         needsReauth = false
         withContext(Dispatchers.IO) {
             Timber.i("Loading bikes — getting access token...")
@@ -324,109 +337,156 @@ fun UploadConfirmationScreen(
             if (accessToken == null) {
                 Timber.e("No valid access token available — cannot load bikes")
                 bikeLoadError = "Not connected to Strava"
+                connectionState = ConnectionState.FAILED
                 loadingBikes = false
                 return@withContext
             }
 
             Timber.i("Got access token (${accessToken.take(8)}...), calling GET /athlete")
-            val maxAttempts = 4 // ~10 seconds total with 3s intervals
-            var lastError: Throwable? = null
+            val result = api.getAthlete(accessToken)
+            result.onSuccess { athlete ->
+                Timber.i("GET /athlete succeeded — ${athlete.bikes.size} bikes, resource_state=${athlete.resourceState}, athlete=${athlete.firstName} ${athlete.lastName}")
 
-            for (attempt in 1..maxAttempts) {
-                val result = api.getAthlete(accessToken)
-                result.onSuccess { athlete ->
-                    Timber.i("GET /athlete succeeded — ${athlete.bikes.size} bikes, resource_state=${athlete.resourceState}, athlete=${athlete.firstName} ${athlete.lastName}")
-
-                    // Get Strava bikes — from athlete endpoint or activities fallback
-                    var stravaBikes: List<StravaApi.Bike> = athlete.bikes
-                    if (stravaBikes.isEmpty() && athlete.resourceState <= 2) {
-                        Timber.w("No bikes — resource_state=${athlete.resourceState}, trying activities fallback")
-                        stravaBikes = discoverStravaBikes(accessToken)
-                        if (stravaBikes.isNotEmpty()) {
-                            Timber.i("Activities fallback found ${stravaBikes.size} bikes")
-                        }
+                // Get Strava bikes — from athlete endpoint or activities fallback
+                var stravaBikes: List<StravaApi.Bike> = athlete.bikes
+                if (stravaBikes.isEmpty() && athlete.resourceState <= 2) {
+                    Timber.w("No bikes — resource_state=${athlete.resourceState}, trying activities fallback")
+                    stravaBikes = discoverStravaBikes(accessToken)
+                    if (stravaBikes.isNotEmpty()) {
+                        Timber.i("Activities fallback found ${stravaBikes.size} bikes")
                     }
-
-                    if (stravaBikes.isEmpty()) {
-                        Timber.w("No Strava bikes found from any source")
-                        bikes = emptyList()
-                        if (hasTriedReauth) {
-                            bikeLoadError = "No bikes found on Strava — upload will use Strava default"
-                        } else {
-                            needsReauth = true
-                            bikeLoadError = "Reconnect Strava to enable bike selection"
-                        }
-                    } else if (karooBikes.isNotEmpty()) {
-                        // Match Karoo bike profiles to Strava gear_ids by name
-                        val matched = matchBikes(karooBikes, stravaBikes)
-                        if (matched.isNotEmpty()) {
-                            bikes = matched
-                            Timber.i("Matched ${matched.size}/${karooBikes.size} Karoo bikes to Strava")
-                        } else {
-                            // No name matches — show Strava bikes with a warning
-                            bikes = stravaBikes
-                            bikeLoadError = "Karoo bike names don't match Strava — showing all Strava bikes"
-                            Timber.w("No Karoo→Strava name matches. Karoo: ${karooBikes.map { it.name }}, Strava: ${stravaBikes.map { it.name }}")
-                        }
-                    } else {
-                        // No Karoo bike profiles — fall back to all Strava bikes
-                        bikes = stravaBikes
-                        Timber.i("No Karoo bike profiles — showing all ${stravaBikes.size} Strava bikes")
-                    }
-
-                    // Auto-select bike using (in priority order):
-                    // 1. Inferred bike name from odometer change during the ride
-                    // 2. Ride profile name match (fallback)
-                    // 3. Single bike auto-select
-                    if (selectedGearId == null && bikes.isNotEmpty()) {
-                        // Auto-select: look up saved gear_id for this profile
-                        val savedGearId = rideProfileName?.let {
-                            profileBikeMapper.getGearIdForProfile(it)
-                        }
-                        val saved = savedGearId?.let { gid ->
-                            bikes.find { it.id == gid }
-                        }
-                        val selected = saved
-                            ?: if (bikes.size == 1) bikes.first() else null
-
-                        if (selected != null) {
-                            selectedGearId = selected.id
-                            selectedBikeName = selected.name
-                            Timber.i("Auto-selected bike: ${selected.name} (${selected.id}) profile=$rideProfileName savedGearId=$savedGearId")
-                        } else {
-                            Timber.i("No saved mapping for profile '$rideProfileName' — user must pick (bikes=${bikes.map { it.name }})")
-                        }
-                    }
-                    waitingForWifi = false
-                    loadingBikes = false
-                    return@withContext
                 }
-                result.onFailure { e ->
-                    lastError = e
-                    val isNetworkError = e is java.net.UnknownHostException ||
-                        e is java.net.ConnectException ||
-                        e.message?.contains("resolve host", ignoreCase = true) == true
-                    if (isNetworkError && attempt < maxAttempts) {
-                        waitingForWifi = true
-                        Timber.i("No network (attempt $attempt/$maxAttempts) — waiting for WiFi...")
-                        kotlinx.coroutines.delay(3000L)
+
+                if (stravaBikes.isEmpty()) {
+                    Timber.w("No Strava bikes found from any source")
+                    bikes = emptyList()
+                    if (hasTriedReauth) {
+                        bikeLoadError = "No bikes found on Strava — upload will use Strava default"
                     } else {
-                        Timber.w("GET /athlete attempt $attempt failed: ${e.message}")
+                        needsReauth = true
+                        bikeLoadError = "Reconnect Strava to enable bike selection"
+                    }
+                } else if (karooBikes.isNotEmpty()) {
+                    // Match Karoo bike profiles to Strava gear_ids by name
+                    val matched = matchBikes(karooBikes, stravaBikes)
+                    if (matched.isNotEmpty()) {
+                        bikes = matched
+                        Timber.i("Matched ${matched.size}/${karooBikes.size} Karoo bikes to Strava")
+                    } else {
+                        // No name matches — show Strava bikes with a warning
+                        bikes = stravaBikes
+                        bikeLoadError = "Karoo bike names don't match Strava — showing all Strava bikes"
+                        Timber.w("No Karoo→Strava name matches. Karoo: ${karooBikes.map { it.name }}, Strava: ${stravaBikes.map { it.name }}")
+                    }
+                } else {
+                    // No Karoo bike profiles — fall back to all Strava bikes
+                    bikes = stravaBikes
+                    Timber.i("No Karoo bike profiles — showing all ${stravaBikes.size} Strava bikes")
+                }
+
+                // Auto-select bike using (in priority order):
+                // 1. Saved profile→bike mapping
+                // 2. Single bike auto-select
+                if (selectedGearId == null && bikes.isNotEmpty()) {
+                    val savedGearId = rideProfileName?.let {
+                        profileBikeMapper.getGearIdForProfile(it)
+                    }
+                    val saved = savedGearId?.let { gid ->
+                        bikes.find { it.id == gid }
+                    }
+                    val selected = saved
+                        ?: if (bikes.size == 1) bikes.first() else null
+
+                    if (selected != null) {
+                        selectedGearId = selected.id
+                        selectedBikeName = selected.name
+                        Timber.i("Auto-selected bike: ${selected.name} (${selected.id}) profile=$rideProfileName savedGearId=$savedGearId")
+                    } else {
+                        Timber.i("No saved mapping for profile '$rideProfileName' — user must pick (bikes=${bikes.map { it.name }})")
+                    }
+                }
+                connectionState = ConnectionState.READY
+                loadingBikes = false
+                return@withContext
+            }
+            result.onFailure { e ->
+                Timber.e(e, "GET /athlete failed: ${e.message}")
+                bikeLoadError = "Could not connect to Strava"
+                connectionState = ConnectionState.FAILED
+                loadingBikes = false
+            }
+        }
+    }
+
+    // Wait for WiFi, then fetch Strava bikes.
+    // Uses ConnectivityManager.NetworkCallback so we react instantly
+    // when the Karoo re-enables WiFi after a ride, instead of polling.
+    LaunchedEffect(Unit) {
+        val cm = localContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+
+        // Check if we already have internet right now
+        val currentNetwork = cm.activeNetwork
+        val currentCaps = currentNetwork?.let { cm.getNetworkCapabilities(it) }
+        val hasInternet = currentCaps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true &&
+            currentCaps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+
+        if (hasInternet) {
+            Timber.i("WiFi already available — connecting to Strava immediately")
+            fetchStravaBikes()
+        } else {
+            // No network yet — wait for WiFi to come up
+            Timber.i("No network — waiting for WiFi to reconnect after ride...")
+            connectionState = ConnectionState.WAITING_FOR_WIFI
+
+            val wifiTimeout = 30_000L // 30 seconds before giving up
+            var networkArrived = false
+
+            val networkCallback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    Timber.i("NetworkCallback: WiFi available")
+                    networkArrived = true
+                }
+
+                override fun onCapabilitiesChanged(
+                    network: Network,
+                    capabilities: NetworkCapabilities,
+                ) {
+                    if (capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                        Timber.i("NetworkCallback: WiFi validated (has internet)")
+                        networkArrived = true
                     }
                 }
             }
 
-            // All retries exhausted
-            Timber.e(lastError, "GET /athlete FAILED after $maxAttempts attempts")
-            waitingForWifi = false
-            bikeLoadError = "No network — connect to WiFi and tap Retry"
-            loadingBikes = false
-        }
-    }
+            val request = NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
 
-    // Fetch the user's Strava bikes on first load (auto-retries while WiFi reconnects)
-    LaunchedEffect(Unit) {
-        loadBikes()
+            cm.registerNetworkCallback(request, networkCallback)
+
+            try {
+                // Poll the flag set by the callback, with a timeout
+                val startTime = System.currentTimeMillis()
+                while (!networkArrived && (System.currentTimeMillis() - startTime) < wifiTimeout) {
+                    kotlinx.coroutines.delay(500L)
+                }
+
+                if (networkArrived) {
+                    // Small extra delay to let the connection fully stabilize
+                    kotlinx.coroutines.delay(1000L)
+                    Timber.i("WiFi connected — fetching Strava bikes")
+                    fetchStravaBikes()
+                } else {
+                    Timber.w("WiFi did not connect within ${wifiTimeout / 1000}s")
+                    bikeLoadError = "WiFi not available — tap Retry when connected"
+                    connectionState = ConnectionState.FAILED
+                    loadingBikes = false
+                }
+            } finally {
+                cm.unregisterNetworkCallback(networkCallback)
+            }
+        }
     }
 
     // Auth screen overlay
@@ -439,7 +499,10 @@ fun UploadConfirmationScreen(
                 showAuthScreen = false
                 uploadError = null
                 hasTriedReauth = true
-                scope.launch { loadBikes() }
+                loadingBikes = true
+                bikeLoadError = null
+                connectionState = ConnectionState.CONNECTING_TO_STRAVA
+                scope.launch { fetchStravaBikes() }
                 // On K3, prompt for "All files access" so FIT files are readable
                 requestAllFilesAccessIfNeeded(localContext)
             },
@@ -503,7 +566,11 @@ fun UploadConfirmationScreen(
                             strokeWidth = 2.dp,
                         )
                         Text(
-                            text = if (waitingForWifi) "Waiting for WiFi…" else "Loading bikes…",
+                            text = when (connectionState) {
+                                ConnectionState.WAITING_FOR_WIFI -> "Waiting for WiFi…"
+                                ConnectionState.CONNECTING_TO_STRAVA -> "Connecting to Strava…"
+                                else -> "Loading bikes…"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
@@ -533,7 +600,10 @@ fun UploadConfirmationScreen(
                         Spacer(modifier = Modifier.height(8.dp))
                         OutlinedButton(
                             onClick = {
-                                scope.launch { loadBikes() }
+                                loadingBikes = true
+                                bikeLoadError = null
+                                connectionState = ConnectionState.CONNECTING_TO_STRAVA
+                                scope.launch { fetchStravaBikes() }
                             },
                         ) {
                             Text("Retry", style = MaterialTheme.typography.bodySmall)

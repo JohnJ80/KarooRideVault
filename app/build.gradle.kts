@@ -13,8 +13,8 @@ android {
         applicationId = "com.ridevault.karoo"
         minSdk = 23
         targetSdk = 34
-        versionCode = 6
-        versionName = "0.5.1"
+        versionCode = 7
+        versionName = "0.5.2"
 
         // Strava OAuth — replace with your own app credentials
         buildConfigField("String", "STRAVA_CLIENT_ID", "\"${project.findProperty("strava.clientId") ?: ""}\"")
